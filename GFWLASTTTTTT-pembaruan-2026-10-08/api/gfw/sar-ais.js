@@ -18,6 +18,8 @@ const DATA_DELAY_DAYS = 5;   // hari terakhir yang tersedia = hari ini - 5
 const DEFAULT_DAYS = 30;
 const MAX_DAYS = 62;
 const CACHE_TTL_SECONDS = 6 * 60 * 60;
+const REQUEST_TIMEOUT_MS = 40000;  // batas satu laporan 4Wings
+const TOTAL_DEADLINE_MS = 55000;   // T-14: batas SEMUA laporan bersama, di bawah batas fungsi 60 detik
 const CDN_CACHE = "public, max-age=600, s-maxage=3600, stale-while-revalidate=43200";
 const CDN_CACHE_STALE = "public, max-age=60, s-maxage=300, stale-while-revalidate=3600";
 
@@ -44,11 +46,11 @@ function resolveRange(query) {
   return { start: isoDay(start), end: isoDay(end), lastDay: isoDay(end - DAY_MS) };
 }
 
-async function fetchReport(token, { range, matched }) {
+async function fetchReport(token, { range, matched, withIdentity = false }, deadlineAt) {
   const url = new URL(GFW_REPORT);
   url.searchParams.set("spatial-resolution", "HIGH");
   url.searchParams.set("temporal-resolution", "DAILY");
-  if (matched) url.searchParams.set("group-by", "VESSEL_ID"); // satu baris per kapal, lengkap dengan identitasnya
+  if (matched && withIdentity) url.searchParams.set("group-by", "VESSEL_ID"); // satu baris per kapal, lengkap dengan identitasnya
   url.searchParams.set("datasets[0]", DATASET);
   url.searchParams.set("date-range", range);
   url.searchParams.set("format", "JSON");
@@ -57,31 +59,55 @@ async function fetchReport(token, { range, matched }) {
   // GFW hanya mengizinkan satu laporan berjalan per token; kalau masih sibuk (429), tunggu sebentar lalu coba lagi.
   let res;
   for (let attempt = 0; attempt < 4; attempt++) {
+    const left = deadlineAt - Date.now();
+    if (left <= 0) throw new Error(`GFW SAR: batas waktu ${TOTAL_DEADLINE_MS / 1000} detik habis`);
     res = await fetch(url.toString(), {
-      signal: AbortSignal.timeout(40000), // laporan 4Wings bisa lama; batas 40 detik (fungsi maksimal 60 detik)
+      signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, left)), // T-14: tidak boleh melewati batas total
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ region: REGION }),
     });
     if (res.status !== 429) break;
-    await new Promise((resolve) => setTimeout(resolve, 2500 * (attempt + 1)));
+    const wait = 2500 * (attempt + 1);
+    if (Date.now() + wait >= deadlineAt) break; // T-14: tidak menunggu kalau waktunya sudah tidak cukup
+    await new Promise((resolve) => setTimeout(resolve, wait));
   }
-  if (!res.ok) throw new Error(`GFW SAR report gagal: ${res.status}`);
+  if (!res.ok) {
+    const error = new Error(`GFW SAR report gagal: ${res.status}`);
+    error.status = res.status;
+    throw error;
+  }
   const json = await res.json();
   const rows = (json?.entries ?? []).flatMap((entry) => Object.values(entry).flat())
     .filter((row) => row && Number.isFinite(Number(row.lat)) && Number.isFinite(Number(row.lon)));
   return { rows, truncated: json?.nextOffset != null };
 }
 
-const count = (row) => Number(row.detections) || 1;
+// T-13: nilai 0 tetap 0; angka 1 hanya dipakai bila kolom detections tidak ada atau bukan angka.
+const count = (row) => {
+  const n = Number(row.detections);
+  return row.detections === undefined || row.detections === null || !Number.isFinite(n) ? 1 : n;
+};
 const sumDetections = (rows) => rows.reduce((sum, row) => sum + count(row), 0);
 const round2 = (value) => Math.round(Number(value) * 100) / 100;
 
 async function buildPayload(token, range) {
   const dateRange = `${range.start},${range.end}`;
   // Berurutan, bukan bersamaan (lihat batas satu laporan per token di fetchReport).
-  const unmatched = await fetchReport(token, { range: dateRange, matched: false });
-  const matched = await fetchReport(token, { range: dateRange, matched: true });
+  const deadlineAt = Date.now() + TOTAL_DEADLINE_MS; // T-14: satu batas waktu untuk semua laporan
+  const unmatched = await fetchReport(token, { range: dateRange, matched: false }, deadlineAt);
+  let matched;
+  let identityUnavailable = false;
+  try {
+    matched = await fetchReport(token, { range: dateRange, matched: true, withIdentity: true }, deadlineAt);
+  } catch (error) {
+    // X-1: sejak Nov 2026 GFW menonaktifkan sementara group-by=VESSEL_ID untuk dataset SAR (HTTP 404, "temporarily
+    // unavailable ... upstream data dependency issue"). Supaya lapisan AIS-SAR tetap tampil, posisi yang cocok dengan
+    // AIS diambil tanpa identitas kapal; identitas kembali otomatis begitu GFW memulihkan fiturnya (cache 6 jam).
+    if (error.status !== 404) throw error;
+    identityUnavailable = true;
+    matched = await fetchReport(token, { range: dateRange, matched: true, withIdentity: false }, deadlineAt);
+  }
 
   const days = [...new Set([...unmatched.rows, ...matched.rows].map((row) => row.date))].sort();
   const dayIndex = new Map(days.map((day, index) => [day, index]));
@@ -117,9 +143,11 @@ async function buildPayload(token, range) {
     matched: {
       total: sumDetections(matched.rows),
       vessels,
-      points: matched.rows.map((row) => [round2(row.lat), round2(row.lon), dayIndex.get(row.date), count(row), vesselOf(row)]),
+      points: matched.rows.map((row) => [round2(row.lat), round2(row.lon), dayIndex.get(row.date), count(row), identityUnavailable ? null : vesselOf(row)]),
     },
     truncated: unmatched.truncated || matched.truncated,
+    identityUnavailable,
+    ...(identityUnavailable ? { warning: "Identitas kapal yang cocok AIS sementara tidak tersedia dari Global Fishing Watch." } : {}),
   };
 }
 
@@ -130,7 +158,7 @@ export default async function handler(req, res) {
   const allowed = await applyRateLimit(req, res, { name: "gfw-sar-ais", limit: 30, windowSeconds: 10 * 60 });
   if (!allowed) return;
 
-  const key = `gfw:sar-ais:v1:${range.start}:${range.end}`;
+  const key = `gfw:sar-ais:v2:${range.start}:${range.end}`; // v2: cara hitung deteksi (T-13) berubah
   const cached = await cacheGet(key);
   if (cached?.payload) {
     res.setHeader("x-cache", "HIT");

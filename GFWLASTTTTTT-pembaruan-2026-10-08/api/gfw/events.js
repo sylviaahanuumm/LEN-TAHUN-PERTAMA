@@ -26,12 +26,25 @@ const CDN_CACHE_STALE = "public, max-age=60, s-maxage=300, stale-while-revalidat
 // 700 event terbaru di ZEE Indonesia dari ketiga jenis (sekitar 1,5–2 hari data GFW).
 const MAX_EVENTS = 700;
 
-function toIsoDate(date) {
-  return date.includes("T") ? date : `${date}T00:00:00Z`;
+// M-019: tanggal harus berformat YYYY-MM-DD dan benar-benar ada di kalender (misalnya 2026-02-30 ditolak).
+function parseDay(value, fallback) {
+  const text = value === undefined || value === "" ? fallback : String(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+  const ms = Date.parse(`${text}T00:00:00Z`);
+  if (!Number.isFinite(ms) || new Date(ms).toISOString().slice(0, 10) !== text) return null;
+  return text;
+}
+
+// T-09: GFW mengambil event SEBELUM endDate. Supaya event pada tanggal akhir ikut terambil (tanggal akhir inklusif),
+// endDate dikirim sebagai tengah malam hari berikutnya.
+function nextDayIso(day) {
+  const d = new Date(`${day}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString();
 }
 
 function cacheKey(start, end) {
-  return `gfw:events:idn-eez:v5:${MAX_EVENTS}:${start}:${end}:fishing-encounter-loitering`;
+  return `gfw:events:idn-eez:v6:${MAX_EVENTS}:${start}:${end}:fishing-encounter-loitering`;
 }
 
 // Event terbaru satu dataset di ZEE Indonesia.
@@ -47,8 +60,8 @@ async function fetchDataset(token, dataset, start, end) {
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       datasets: [dataset],
-      startDate: toIsoDate(start),
-      endDate: toIsoDate(end),
+      startDate: `${start}T00:00:00Z`,
+      endDate: nextDayIso(end),
       region: INDONESIA_EEZ,
       vesselTypes: ["FISHING"],
     }),
@@ -75,8 +88,11 @@ function isFresh(entry) {
 }
 
 export default async function handler(req, res) {
-  const start = req.query.start_date || new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
-  const end = req.query.end_date || new Date().toISOString().slice(0, 10);
+  const start = parseDay(req.query.start_date, new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10));
+  const end = parseDay(req.query.end_date, new Date().toISOString().slice(0, 10));
+  if (!start || !end || start > end) {
+    return sendProblem(res, 400, "start_date dan end_date harus berformat YYYY-MM-DD, dan start_date tidak boleh setelah end_date.", { events: [] });
+  }
 
   const allowed = await applyRateLimit(req, res, {
     name: "gfw-events",

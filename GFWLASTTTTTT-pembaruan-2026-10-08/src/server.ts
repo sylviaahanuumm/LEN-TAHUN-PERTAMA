@@ -57,7 +57,7 @@ function isCatastrophicSsrErrorBody(body: string, responseStatus: number): boole
 
 // h3 swallows in-handler throws into a normal 500 Response with body
 // {"unhandled":true,"message":"HTTPError"} — try/catch alone never fires for those.
-async function normalizeCatastrophicSsrResponse(response: Response, requestId: string): Promise<Response> {
+async function normalizeCatastrophicSsrResponse(response: Response, requestId: string, startedAt: number): Promise<Response> {
   if (response.status < 500) return response;
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) return response;
@@ -67,7 +67,7 @@ async function normalizeCatastrophicSsrResponse(response: Response, requestId: s
     return response;
   }
 
-  console.error(`[ssr] request ${requestId}:`, consumeCapturedError(requestId) ?? new Error(`h3 swallowed SSR error: ${body}`));
+  console.error(`[ssr] request ${requestId}:`, consumeCapturedError(requestId, startedAt) ?? new Error(`h3 swallowed SSR error: ${body}`));
   return brandedErrorResponse();
 }
 
@@ -76,11 +76,12 @@ export default {
     // M-2 (laporan audit): setiap permintaan punya ID sendiri, supaya galat yang tertangkap tidak tertukar
     // dengan galat permintaan lain yang berjalan bersamaan.
     const requestId = request.headers.get("x-request-id") || crypto.randomUUID();
+    const startedAt = Date.now(); // K-19: dipakai untuk mencocokkan galat tanpa ID permintaan dengan permintaan ini
     return runWithRequestId(requestId, async () => {
       try {
         const handler = await getServerEntry();
         const response = await handler.fetch(request, env, ctx);
-        return await normalizeCatastrophicSsrResponse(response, requestId);
+        return await normalizeCatastrophicSsrResponse(response, requestId, startedAt);
       } catch (error) {
         console.error(`[ssr] request ${requestId}:`, error);
         return brandedErrorResponse();

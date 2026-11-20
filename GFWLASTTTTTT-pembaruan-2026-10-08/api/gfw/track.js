@@ -19,6 +19,14 @@ function toIsoDate(date) {
   return date.includes("T") ? date : `${date}T00:00:00Z`;
 }
 
+// T-15 (duplikat M-019): tanggal harus YYYY-MM-DD dan benar-benar ada di kalender (misalnya 2026-02-30 ditolak).
+function isDay(value) {
+  const text = String(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
+  const ms = Date.parse(`${text}T00:00:00Z`);
+  return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === text;
+}
+
 function computeBounds(track) {
   if (!track.length) return null;
   let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
@@ -42,6 +50,9 @@ export default async function handler(req, res) {
 
   if (!vesselId || !startDate || !endDate) {
     return sendProblem(res, 400, "vessel_id, start_date, end_date required");
+  }
+  if (!isDay(startDate) || !isDay(endDate) || startDate > endDate) {
+    return sendProblem(res, 400, "start_date dan end_date harus berformat YYYY-MM-DD, dan start_date tidak boleh setelah end_date.");
   }
 
   const allowed = await applyRateLimit(req, res, {

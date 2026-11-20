@@ -100,12 +100,17 @@ export function decodeGrib2(bytes) {
     if (!(bytes[p] === 71 && bytes[p + 1] === 82 && bytes[p + 2] === 73 && bytes[p + 3] === 66)) { p++; continue; } // "GRIB"
     if (bytes[p + 7] !== 2) throw new Error("GRIB: bukan edisi 2");
     const end = p + u32(bytes, p + 8) * 4294967296 + u32(bytes, p + 12);
+    // T-03: pesan yang terpotong (unduhan tidak lengkap) ditolak, bukan dibaca sebagai nilai sampah.
+    if (end > bytes.length) throw new Error(`GRIB2: panjang pesan (${end - p} byte) melebihi data yang diterima (${bytes.length - p} byte)`);
     const m = {};
     let drs = null;
     let q = p + 16;
     while (q + 5 <= end - 4) {
       const len = u32(bytes, q);
       const sec = bytes[q + 4];
+      // T-04: panjang section minimal 5 byte (4 byte panjang + 1 byte nomor section) dan tidak boleh melewati akhir
+      // pesan; tanpa pemeriksaan ini, panjang 0 dari data rusak membuat loop berputar selamanya.
+      if (len < 5 || q + len > end) throw new Error(`GRIB2: panjang section ${sec} tidak valid (${len} byte)`);
       if (sec === 1) {
         m.refTime = new Date(Date.UTC(u16(bytes, q + 12), bytes[q + 14] - 1, bytes[q + 15], bytes[q + 16], bytes[q + 17], bytes[q + 18])).toISOString();
       } else if (sec === 3) {

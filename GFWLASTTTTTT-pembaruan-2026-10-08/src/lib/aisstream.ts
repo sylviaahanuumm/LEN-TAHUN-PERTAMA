@@ -66,8 +66,7 @@ export class AisStreamClient {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
-    this.ws?.close();
-    this.ws = null;
+    this.closeSocket();
     this.ships.clear();
     this.cbs.onStatus(false);
   }
@@ -76,23 +75,47 @@ export class AisStreamClient {
     return Array.from(this.ships.values());
   }
 
-  private connect() {
+  // T-61: socket lama dilepas handler-nya lalu ditutup, supaya tidak ada dua socket aktif sekaligus
+  // dan penutupan socket lama tidak memicu penyambungan ulang tambahan.
+  private closeSocket() {
+    const old = this.ws;
+    this.ws = null;
+    if (!old) return;
+    old.onopen = null;
+    old.onmessage = null;
+    old.onclose = null;
+    old.onerror = null;
     try {
-      this.ws = new WebSocket("wss://stream.aisstream.io/v0/stream");
+      old.close();
+    } catch (err) {
+      console.warn("[aisstream] galat diabaikan saat menutup socket lama:", err);
+    }
+  }
+
+  private connect() {
+    if (this.stopped) return;
+    this.closeSocket();
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket("wss://stream.aisstream.io/v0/stream");
     } catch (err) {
       console.warn("[aisstream] koneksi gagal dibuka, dicoba lagi:", err);
       this.scheduleReconnect();
       return;
     }
-    this.ws.onopen = () => {
+    this.ws = ws;
+    // T-61: setiap handler memakai socket miliknya sendiri (ws) dan berhenti jika socket itu sudah bukan socket aktif.
+    ws.onopen = () => {
+      if (this.ws !== ws) return;
       this.cbs.onStatus(true);
-      this.ws?.send(JSON.stringify({
+      ws.send(JSON.stringify({
         APIKey: this.apiKey,
         BoundingBoxes: BBOXES,
         FilterMessageTypes: ["PositionReport", "ShipStaticData"],
       }));
     };
-    this.ws.onmessage = (ev) => {
+    ws.onmessage = (ev) => {
+      if (this.ws !== ws) return;
       this.cbs.onMessage();
       // C.3 (laporan audit): pesan yang gagal dibaca dicatat, tidak lagi ditelan diam-diam.
       try {
@@ -102,13 +125,16 @@ export class AisStreamClient {
         console.warn("[aisstream] pesan AIS tidak bisa dibaca:", err);
       }
     };
-    this.ws.onclose = () => {
+    ws.onclose = () => {
+      if (this.ws !== ws) return;
+      this.ws = null;
       this.cbs.onStatus(false);
       this.scheduleReconnect();
     };
-    this.ws.onerror = () => {
+    ws.onerror = () => {
+      if (this.ws !== ws) return;
       this.cbs.onStatus(false);
-      this.ws?.close();
+      ws.close();
     };
   }
 

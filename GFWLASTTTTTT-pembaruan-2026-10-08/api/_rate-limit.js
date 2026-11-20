@@ -12,8 +12,12 @@ function getHeader(req, name) {
 function getClientIp(req) {
   const trustHeaders = Boolean(process.env.VERCEL) || process.env.TRUST_PROXY === "1";
   if (trustHeaders) {
-    const forwarded = getHeader(req, "x-vercel-forwarded-for") || getHeader(req, "x-real-ip") || getHeader(req, "x-forwarded-for");
-    if (forwarded) return forwarded.split(",")[0].trim();
+    // Diisi oleh Vercel / proxy sendiri, pengunjung tidak bisa mengubahnya.
+    const direct = getHeader(req, "x-vercel-forwarded-for") || getHeader(req, "x-real-ip");
+    if (direct) return direct.split(",")[0].trim();
+    // x-forwarded-for bisa ditambah pengunjung di depan; IP asli = entri paling belakang (ditambahkan proxy).
+    const forwarded = getHeader(req, "x-forwarded-for");
+    if (forwarded) return forwarded.split(",").pop().trim();
   }
   return (
     req.socket?.remoteAddress ||

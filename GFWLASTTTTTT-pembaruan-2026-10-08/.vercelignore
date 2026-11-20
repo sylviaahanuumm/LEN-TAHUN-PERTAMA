@@ -51,3 +51,6 @@ vite-*.log
 
 # Dokumen penjelasan revisi audit (bersifat rahasia): jangan ikut ke GitHub publik maupun website.
 /Penjelasan*.html
+# T-01: pola .vercelignore bisa membedakan huruf besar-kecil, jadi setiap huruf ditulis dua bentuk ([Pp]...).
+# Menangkap Penjelasan / PENJELASAN / penjelasan_revisi / Penjelasan-2026, ekstensi apa pun, di folder mana pun.
+**/[Pp][Ee][Nn][Jj][Ee][Ll][Aa][Ss][Aa][Nn]*

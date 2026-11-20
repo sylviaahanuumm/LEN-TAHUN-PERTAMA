@@ -162,18 +162,23 @@ export async function cacheSet(key, value, ttlSeconds) {
 }
 
 export async function incrementWithTtl(key, ttlSeconds) {
-  const local = getLocal(key);
-  const nextLocal = Number(local || 0) + 1;
-  setLocal(key, nextLocal, ttlSeconds);
+  // K-09: penghitung lokal hanya dipakai bila Redis tidak diatur atau gagal.
+  // Bila Redis berhasil, nilai Redis disalin ke penghitung lokal supaya keduanya tetap sama.
+  const nextLocal = () => {
+    const value = Number(getLocal(key) || 0) + 1;
+    setLocal(key, value, ttlSeconds);
+    return value;
+  };
 
   try {
     const incr = await getCommand("incr", key);
-    if (!incr.configured) return nextLocal;
+    if (!incr.configured) return nextLocal();
     const count = Number(incr.result || 0);
     if (count === 1) await getCommand("expire", key, String(ttlSeconds));
+    setLocal(key, count, ttlSeconds);
     return count;
   } catch (err) {
     console.warn(`[rate-limit] Redis INCR failed for ${key}:`, err?.message || err);
-    return nextLocal;
+    return nextLocal();
   }
 }

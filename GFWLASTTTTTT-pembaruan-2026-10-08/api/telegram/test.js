@@ -3,16 +3,17 @@ import { applyRateLimit } from "../_rate-limit.js";
 import { sendTelegramMessage, telegramConfig } from "./_client.js";
 
 export default async function handler(req, res) {
+  // M-040 (duplikat T-17): metode diperiksa dulu, baru rate limit.
+  if (!["GET", "POST"].includes(req.method || "GET")) {
+    return sendProblem(res, 405, "Method not allowed");
+  }
+
   const allowed = await applyRateLimit(req, res, {
     name: "telegram-test",
     limit: 10,
     windowSeconds: 10 * 60,
   });
   if (!allowed) return;
-
-  if (!["GET", "POST"].includes(req.method || "GET")) {
-    return sendProblem(res, 405, "Method not allowed");
-  }
 
   const config = telegramConfig();
   if (config.missing.length) {

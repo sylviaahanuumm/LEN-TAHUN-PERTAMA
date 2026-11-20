@@ -66,7 +66,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scene-metadata", type=Path, default=DEFAULT_SCENE_METADATA, help="Scene metadata CSV for joining scene fields.")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Output prediction CSV.")
     parser.add_argument("--threshold", type=float, default=None, help="Override decision threshold. Default uses H5 root attr.")
-    parser.add_argument("--seq-len", type=int, default=120, help="Model sequence length.")
+    # T-45: bawaan None = ikut panjang urutan yang tersimpan di model; nilai lain harus sama dengan model.
+    parser.add_argument("--seq-len", type=int, default=None, help="Model sequence length (default: taken from the H5 model, normally 120).")
     parser.add_argument("--min-points", type=int, default=1, help="Minimum points per MMSI group to run.")
     parser.add_argument("--fishing-only", action="store_true", help="Keep only fishing vessels after joining scene metadata.")
     parser.add_argument(
@@ -311,7 +312,9 @@ class GoDarkNet(nn.Module):
         dropout = float(meta["dropout"])
         heads = int(meta.get("attention_heads", 4))
         layers = int(meta.get("attention_layers", 1))
-        self.seq_len = 120
+        # T-45: panjang urutan diambil dari metadata model (bawaan 120), bukan angka tetap, karena context_proj
+        # (LayerNorm/Linear) dibentuk dari nilai ini dan harus sama dengan panjang urutan input.
+        self.seq_len = int(meta.get("seq_len", 120))
         self.in_proj = nn.Sequential(nn.Linear(input_size, input_proj), nn.GELU(), nn.Dropout(dropout))
         self.lstm = nn.LSTM(
             input_proj,
@@ -369,6 +372,24 @@ def load_bundle(model_path: Path):
             except Exception:
                 calibrator = None
     return models, calibrator, threshold
+
+
+def resolve_seq_len(requested: int | None, models: list[dict]) -> int:
+    """T-45: pastikan --seq-len cocok dengan model; jika tidak, berhenti dengan pesan jelas (bukan shape mismatch)."""
+    model_lens = sorted({int(item["model"].seq_len) for item in models})
+    if not model_lens:
+        raise SystemExit("Error: file H5 tidak berisi model.")
+    if len(model_lens) > 1:
+        raise SystemExit(f"Error: model di ensemble memakai seq_len berbeda-beda ({model_lens}); file H5 tidak konsisten.")
+    model_len = model_lens[0]
+    if requested is None:
+        return model_len
+    if requested != model_len:
+        raise SystemExit(
+            f"Error: --seq-len {requested} tidak cocok dengan model ({model_len}). "
+            f"Arsitektur model tetap {model_len} langkah; jalankan tanpa --seq-len atau pakai --seq-len {model_len}."
+        )
+    return requested
 
 
 def calibrate_probs(probs: np.ndarray, calibrator) -> np.ndarray:
@@ -582,10 +603,11 @@ def main() -> None:
     model_path = choose_model(args.model)
     models, calibrator, model_threshold = load_bundle(model_path)
     threshold = args.threshold if args.threshold is not None else model_threshold
+    seq_len = resolve_seq_len(args.seq_len, models)  # T-45: dicek sebelum data diproses
 
     points = prepare_points(args.input)
     features = add_features(points)
-    pred = run_inference(features, models, calibrator, args.seq_len, args.min_points)
+    pred = run_inference(features, models, calibrator, seq_len, args.min_points)
     gear_reference = load_ais_gear_reference(args.gear_reference_dir)
     if not pred.empty:
         pred["threshold"] = threshold

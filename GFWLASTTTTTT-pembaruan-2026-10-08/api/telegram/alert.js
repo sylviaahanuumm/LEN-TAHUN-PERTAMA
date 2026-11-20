@@ -155,16 +155,17 @@ function formatAlert(body = {}) {
 }
 
 export default async function handler(req, res) {
+  // T-17: metode diperiksa dulu, supaya request selain POST tidak menghabiskan kuota rate limit.
+  if ((req.method || "GET") !== "POST") {
+    return sendProblem(res, 405, "Method not allowed. Use POST.");
+  }
+
   const allowed = await applyRateLimit(req, res, {
     name: "telegram-alert",
     limit: 30,
     windowSeconds: 10 * 60,
   });
   if (!allowed) return;
-
-  if ((req.method || "GET") !== "POST") {
-    return sendProblem(res, 405, "Method not allowed. Use POST.");
-  }
 
   const config = telegramConfig();
   if (config.missing.length) {

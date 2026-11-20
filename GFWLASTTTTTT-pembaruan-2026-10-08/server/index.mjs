@@ -219,7 +219,11 @@ const server = http.createServer(async (req, res) => {
   try {
     // F3-S (laporan audit B.4 dan Fase 3): halaman, data, API, dan relay AIS hanya dikirim bila cookie sesi login sah,
     // dengan aturan yang sama seperti middleware.js di Vercel (api/_session.js).
-    const decision = await decideAccess({ method: req.method, url: req.url || "/", cookieHeader: req.headers.cookie, secure: false });
+    // T-50: cookie diberi atribut Secure bila koneksi asli HTTPS. Header x-forwarded-proto hanya dipercaya bila
+    // TRUST_PROXY=1 (sama seperti api/_rate-limit.js); COOKIE_SECURE=1 memaksa Secure.
+    const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+    const secure = process.env.COOKIE_SECURE === "1" || (process.env.TRUST_PROXY === "1" && forwardedProto === "https");
+    const decision = await decideAccess({ method: req.method, url: req.url || "/", cookieHeader: req.headers.cookie, secure });
     if (decision.action === "redirect") {
       res.writeHead(302, { Location: decision.location, "Cache-Control": "no-store" });
       return res.end();

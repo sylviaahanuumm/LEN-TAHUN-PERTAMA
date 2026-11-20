@@ -54,7 +54,12 @@ export default async function handler(req, res) {
   if (!(userOk && passwordOk)) {
     return sendProblem(res, 401, "Nama pengguna atau kata sandi salah.", { ok: false });
   }
-  const { token, payload } = await createSession(expectedUser);
-  res.setHeader("Set-Cookie", sessionCookie(token, payload, { secure: isSecure(req) }));
-  return res.json({ ok: true });
+  try {
+    const { token, payload } = await createSession(expectedUser);
+    res.setHeader("Set-Cookie", sessionCookie(token, payload, { secure: isSecure(req) }));
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[login] sesi gagal dibuat:", err);
+    return sendProblem(res, 500, "Gagal membuat sesi. Coba lagi.", { ok: false });
+  }
 }

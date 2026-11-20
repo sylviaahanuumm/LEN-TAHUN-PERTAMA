@@ -141,7 +141,7 @@ export function isPublicPath(pathname) {
 }
 
 // Halaman (bukan data/API): tanpa sesi diarahkan ke halaman login, bukan dibalas 401.
-function isPageRequest(pathname) {
+export function isPageRequest(pathname) {
   if (pathname.startsWith("/api/")) return false;
   const last = pathname.split("/").pop() || "";
   return last === "" || last.endsWith(".html") || !last.includes(".");

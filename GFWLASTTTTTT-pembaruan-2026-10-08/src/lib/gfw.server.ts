@@ -84,6 +84,7 @@ export type GfwRawEvent = {
 
 type GfwEventsResponse = {
   entries?: GfwRawEvent[];
+  nextOffset?: number | null;
 };
 
 function authHeaders() {
@@ -147,6 +148,41 @@ function computeBounds(track: TrackPoint[]): TrackResponse["bounds"] {
   return [[minLat, minLon], [maxLat, maxLon]];
 }
 
+const EVENTS_PAGE_SIZE = 200;
+const EVENTS_MAX_PAGES = 5; // T-63: paling banyak 5 halaman = 1.000 event per permintaan
+
+// T-63: ambil event per halaman (offset) sampai halaman tidak penuh atau GFW tidak memberi nextOffset, dengan batas
+// EVENTS_MAX_PAGES halaman. Bila batas tercapai, peringatan dicatat supaya data yang terpotong tidak hilang diam-diam.
+async function fetchEventPages(body: Record<string, unknown>, sort: string, label: string): Promise<GfwRawEvent[]> {
+  const all: GfwRawEvent[] = [];
+  for (let page = 0; page < EVENTS_MAX_PAGES; page++) {
+    const url = new URL(`${GFW_BASE}/events`);
+    url.searchParams.set("limit", String(EVENTS_PAGE_SIZE));
+    url.searchParams.set("offset", String(page * EVENTS_PAGE_SIZE));
+    url.searchParams.set("sort", sort);
+    const res = await fetch(url.toString(), {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(GFW_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch((err: unknown) => {
+        console.warn(`[${label}] isi balasan galat GFW tidak bisa dibaca:`, err);
+        return "";
+      });
+      throw new Error(`GFW events failed: ${res.status} ${text.slice(0, 200)}`);
+    }
+    const json: GfwEventsResponse = await res.json();
+    const entries = json?.entries ?? [];
+    all.push(...entries);
+    const noNextPage = json?.nextOffset === undefined || json?.nextOffset === null;
+    if (entries.length < EVENTS_PAGE_SIZE || noNextPage) return all;
+  }
+  console.warn(`[${label}] hasil dipotong di ${EVENTS_MAX_PAGES * EVENTS_PAGE_SIZE} event (masih ada halaman berikutnya di GFW).`);
+  return all;
+}
+
 export async function getTrack(vesselId: string, startDate: string, endDate: string): Promise<TrackResponse> {
   const url = new URL(`${GFW_BASE}/vessels/${encodeURIComponent(vesselId)}/tracks`);
   url.searchParams.set("datasets[0]", GFW_TRACK_DATASET);
@@ -189,32 +225,25 @@ export async function getTrack(vesselId: string, startDate: string, endDate: str
   } else if (res.status === 404) {
     // Fallback: use event positions as track points
     source = "events";
-    const evUrl = new URL(`${GFW_BASE}/events`);
-    evUrl.searchParams.set("limit", "200");
-    evUrl.searchParams.set("offset", "0");
-    evUrl.searchParams.set("sort", "+start");
-    const evRes = await fetch(evUrl.toString(), {
-      method: "POST",
-      headers: authHeaders(),
-      body: JSON.stringify({
+    // T-63: semua halaman event diambil (bukan hanya 200 pertama). Kalau GFW gagal, lintasan tetap kosong seperti dulu.
+    let entries: GfwRawEvent[] = [];
+    try {
+      entries = await fetchEventPages({
         datasets: GFW_EVENT_DATASETS,
         startDate: toIsoDate(startDate),
         endDate: toIsoDate(endDate),
         vessels: [vesselId],
-      }),
-      signal: AbortSignal.timeout(GFW_TIMEOUT_MS),
-    });
-    if (evRes.ok) {
-      const j: GfwEventsResponse = await evRes.json();
-      const entries: GfwRawEvent[] = j?.entries ?? [];
-      track = entries.map((e): TrackPoint => ({
-        lat: Number(e?.position?.lat),
-        lon: Number(e?.position?.lon),
-        timestamp: e?.start,
-        speed: undefined,
-        course: undefined,
-      })).filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lon));
+      }, "+start", "gfw-track");
+    } catch (err) {
+      console.warn("[gfw-track] event cadangan gagal diambil:", err);
     }
+    track = entries.map((e): TrackPoint => ({
+      lat: Number(e?.position?.lat),
+      lon: Number(e?.position?.lon),
+      timestamp: e?.start,
+      speed: undefined,
+      course: undefined,
+    })).filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lon));
   } else {
     throw new Error(`GFW track failed: ${res.status}`);
   }
@@ -233,31 +262,11 @@ export async function getTrack(vesselId: string, startDate: string, endDate: str
 // Fetch fishing/encounter/loitering events for Indonesian waters
 // Matches server.py gfw_fetch() approach: one POST, all datasets, camelCase dates
 export async function getIndonesianEvents(startDate: string, endDate: string): Promise<GfwRawEvent[]> {
-  const url = new URL(`${GFW_BASE}/events`);
-  url.searchParams.set("limit", "200");
-  url.searchParams.set("offset", "0");
-  url.searchParams.set("sort", "-start");
-
-  const res = await fetch(url.toString(), {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({
-      datasets: GFW_EVENT_DATASETS,
-      startDate: toIsoDate(startDate),
-      endDate: toIsoDate(endDate),
-      geometry: INDONESIA_POLY,
-    }),
-    signal: AbortSignal.timeout(GFW_TIMEOUT_MS),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch((err: unknown) => {
-      console.warn("[gfw-events] isi balasan galat GFW tidak bisa dibaca:", err);
-      return "";
-    });
-    throw new Error(`GFW events failed: ${res.status} ${text.slice(0, 200)}`);
-  }
-
-  const json: GfwEventsResponse = await res.json();
-  return json?.entries ?? [];
+  // T-63: semua halaman event diambil (maks. EVENTS_MAX_PAGES halaman), bukan hanya 200 pertama.
+  return fetchEventPages({
+    datasets: GFW_EVENT_DATASETS,
+    startDate: toIsoDate(startDate),
+    endDate: toIsoDate(endDate),
+    geometry: INDONESIA_POLY,
+  }, "-start", "gfw-events");
 }

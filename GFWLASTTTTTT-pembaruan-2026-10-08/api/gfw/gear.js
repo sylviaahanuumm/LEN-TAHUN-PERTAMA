@@ -12,10 +12,11 @@ const GFW_IDENTITY_DATASET = "public-global-vessel-identity:latest";
 const MAX_IDS = 1000;
 const GFW_BATCH = 100;
 const CACHE_TTL_SECONDS = 7 * 24 * 60 * 60;
+const EMPTY_TTL_SECONDS = 15 * 60;        // T-11: hasil kosong (null) hanya disimpan 15 menit, lalu dicoba lagi
 const VESSEL_ID_RE = /^[0-9a-f-]{20,64}$/i;
 
 function cacheKey(id) {
-  return `gfw:gear:v1:${id}`;
+  return `gfw:gear:v2:${id}`; // v2: aturan pencocokan K-10/T-10 berubah, cache v1 tidak dipakai lagi
 }
 
 function readIds(req) {
@@ -28,18 +29,18 @@ function readIds(req) {
 // Pilih info sumber yang memuat vesselId ini, lalu alat tangkap dengan tahun berlaku paling akhir.
 function pickGear(entry, id) {
   const sources = entry?.combinedSourcesInfo || [];
-  const info = sources.find((s) => s.vesselId === id) || sources[0];
+  // K-10: hanya sumber yang vesselId-nya PERSIS sama; tidak ada tebakan ke sources[0] (bisa milik ID lain).
+  const info = sources.find((s) => s.vesselId === id);
+  if (!info) return null;
   const gears = info?.geartypes || [];
   if (!gears.length) return null;
   const latest = gears.reduce((a, b) => (Number(b.yearTo) > Number(a.yearTo) ? b : a));
   return { name: latest.name, source: latest.source, yearFrom: latest.yearFrom, yearTo: latest.yearTo };
 }
 
+// T-10: hanya ID dari combinedSourcesInfo, karena hanya di sana pickGear bisa menemukan data alat tangkapnya.
 function entryIds(entry) {
-  return [
-    ...(entry?.combinedSourcesInfo || []).map((s) => s.vesselId),
-    ...(entry?.selfReportedInfo || []).map((s) => s.id),
-  ].filter(Boolean);
+  return (entry?.combinedSourcesInfo || []).map((s) => s.vesselId).filter(Boolean);
 }
 
 async function fetchGearBatch(ids, token) {
@@ -90,11 +91,11 @@ export default async function handler(req, res) {
         const found = await fetchGearBatch(batch, token);
         await Promise.all(batch.map((id) => {
           gear[id] = found[id] ?? null;
-          return cacheSet(cacheKey(id), { gear: gear[id] }, CACHE_TTL_SECONDS);
+          return cacheSet(cacheKey(id), { gear: gear[id] }, gear[id] ? CACHE_TTL_SECONDS : EMPTY_TTL_SECONDS);
         }));
       }
     } catch (e) {
-      console.error("[gfw gear]", e?.message);
+      console.error("[gfw gear]", e); // R-016: error lengkap (dengan stack) hanya di log server
       return res.json({ gear, warning: e?.message || "gear lookup failed" });
     }
   }

@@ -83,9 +83,13 @@ async function run() {
   const token = String(process.env.GFW_API_TOKEN || process.env.GFW_TOKEN || "").trim();
   if (!db || running || !token) return;
   running = true;
+  // T-51: koneksi disimpan di variabel lokal. Setelah setiap await dicek apakah stop() (atau start() dengan
+  // database lain) sudah dipanggil; jika ya, run() berhenti tanpa menulis apa pun ke koneksi yang sudah dilepas.
+  const conn = db;
+  const stillActive = () => db === conn;
   try {
     const now = Math.floor(Date.now() / 1000);
-    const todo = db.prepare(`
+    const todo = conn.prepare(`
       SELECT v.mmsi FROM vessels v
       LEFT JOIN vessel_identity i ON i.mmsi = v.mmsi
       WHERE i.mmsi IS NULL
@@ -98,7 +102,7 @@ async function run() {
       .filter(isShipMmsi)
       .slice(0, BATCH_SIZE * BATCHES_PER_RUN);
 
-    const save = db.prepare(`
+    const save = conn.prepare(`
       INSERT INTO vessel_identity (mmsi, checked_at, found, gfw_vessel_id, name, flag, shiptype, geartype, gear_source)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (mmsi) DO UPDATE SET
@@ -110,22 +114,25 @@ async function run() {
     for (let i = 0; i < todo.length && budgetLeft() > 0; i += BATCH_SIZE) {
       const batch = todo.slice(i, i + BATCH_SIZE);
       const found = await lookupBatch(batch, token);
+      if (!stillActive()) return;
       const checkedAt = Math.floor(Date.now() / 1000);
-      db.exec("BEGIN");
+      conn.exec("BEGIN");
       try {
         for (const mmsi of batch) {
           const info = found.get(mmsi);
           save.run(mmsi, checkedAt, info ? 1 : 0, info?.vesselId ?? null, info?.name ?? null, info?.flag ?? null,
             info?.shiptype ?? null, info?.geartype ?? null, info?.gearSource ?? null);
         }
-        db.exec("COMMIT");
+        conn.exec("COMMIT");
       } catch (err) {
-        db.exec("ROLLBACK");
+        // Rollback dilindungi supaya galat rollback tidak menutupi galat aslinya.
+        try { conn.exec("ROLLBACK"); } catch (rollbackErr) { console.warn("[vessel-identity] galat diabaikan:", rollbackErr?.message || rollbackErr); }
         throw err;
       }
     }
     lastError = null;
   } catch (err) {
+    if (!stillActive()) return; // galat dari koneksi yang sudah dihentikan tidak perlu dilaporkan
     lastError = err?.message || String(err);
     console.error("[vessel-identity]", lastError);
   } finally {

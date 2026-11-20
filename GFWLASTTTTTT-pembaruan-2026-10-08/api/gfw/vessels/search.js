@@ -14,11 +14,23 @@ function cacheKey(query, limit) {
   return `gfw:vessels:search:v1:${encodeURIComponent(query.toLowerCase())}:${limit}`;
 }
 
+const MAX_QUERY_LENGTH = 100;
+
+// T-16: limit harus bilangan bulat 1–50; selain itu (abc, -5, kosong) memakai nilai bawaan 20.
+function parseLimit(value) {
+  const n = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(n) && n >= 1 ? Math.min(50, n) : 20;
+}
+
 export default async function handler(req, res) {
-  const query = (req.query.query || "").trim();
-  const limit = Math.min(50, Number(req.query.limit || "20"));
+  const query = String(req.query.query || "").trim();
+  const limit = parseLimit(req.query.limit);
 
   if (!query) return res.json({ entries: [] });
+  // M-033: query yang terlalu panjang ditolak sebelum dikirim ke GFW atau dipakai sebagai key cache.
+  if (query.length > MAX_QUERY_LENGTH) {
+    return sendProblem(res, 400, `query paling panjang ${MAX_QUERY_LENGTH} karakter.`, { entries: [] });
+  }
 
   const allowed = await applyRateLimit(req, res, {
     name: "gfw-vessel-search",
@@ -84,6 +96,7 @@ export default async function handler(req, res) {
         warning: "Serving stale GFW vessel search because live fetch failed",
       });
     }
-    sendProblem(res, 500, e?.message || "search failed", { entries: [] });
+    console.error("[gfw vessel search]", e); // R-021: detail error hanya di log server
+    sendProblem(res, 500, "Pencarian kapal di GFW gagal. Coba lagi sebentar lagi.", { entries: [] });
   }
 }

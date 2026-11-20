@@ -17,7 +17,13 @@ const CACHE_TTL_SECONDS = 12 * 60 * 60;   // disimpan lama supaya masih ada cada
 const FRESH_MS = 60 * 60 * 1000;          // tapi dicoba diperbarui tiap jam
 const CDN_CACHE = "public, max-age=600, s-maxage=1800, stale-while-revalidate=10800";
 
+const FETCH_TIMEOUT_MS = 20000;            // batas satu permintaan ke NOAA/AWS
+const TOTAL_DEADLINE_MS = 45000;           // T-18: batas seluruh percobaan (semua run × semua jalur)
+
 const pad = (n, w = 2) => String(n).padStart(w, "0");
+
+// Sinyal yang berhenti saat batas satu permintaan ATAU batas keseluruhan tercapai, mana yang lebih dulu.
+const fetchSignal = (deadline) => AbortSignal.any([deadline, AbortSignal.timeout(FETCH_TIMEOUT_MS)]);
 
 function runParts(runMs) {
   const d = new Date(runMs);
@@ -25,22 +31,22 @@ function runParts(runMs) {
 }
 
 // Jalur 1: NOMADS (NOAA) — server memotongkan file-nya, cukup satu permintaan.
-async function fromNomads(runMs, fh) {
+async function fromNomads(runMs, fh, deadline) {
   const { ymd, hh } = runParts(runMs);
   const url =
     "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_1p00.pl" +
     `?file=gfs.t${hh}z.pgrb2.1p00.f${pad(fh, 3)}&lev_10_m_above_ground=on&var_UGRD=on&var_VGRD=on` +
     `&dir=%2Fgfs.${ymd}%2F${hh}%2Fatmos`;
-  const r = await fetch(url, { signal: AbortSignal.timeout(20000) });
+  const r = await fetch(url, { signal: fetchSignal(deadline) });
   if (!r.ok) throw new Error(`NOMADS ${r.status}`);
   return new Uint8Array(await r.arrayBuffer());
 }
 
 // Jalur 2 (cadangan): salinan resmi GFS di AWS — baca indeksnya, lalu ambil hanya bagian angin 10 m.
-async function fromAws(runMs, fh) {
+async function fromAws(runMs, fh, deadline) {
   const { ymd, hh } = runParts(runMs);
   const base = `https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.${ymd}/${hh}/atmos/gfs.t${hh}z.pgrb2.1p00.f${pad(fh, 3)}`;
-  const idxRes = await fetch(`${base}.idx`, { signal: AbortSignal.timeout(20000) });
+  const idxRes = await fetch(`${base}.idx`, { signal: fetchSignal(deadline) });
   if (!idxRes.ok) throw new Error(`AWS idx ${idxRes.status}`);
   const lines = (await idxRes.text()).split("\n");
   const u = lines.findIndex((l) => l.includes(":UGRD:10 m above ground:"));
@@ -50,7 +56,7 @@ async function fromAws(runMs, fh) {
   const start = offset(Math.min(u, v));
   const end = offset(Math.max(u, v) + 1); // awal pesan berikutnya
   if (!Number.isFinite(start) || !Number.isFinite(end)) throw new Error("AWS idx: posisi tidak terbaca");
-  const r = await fetch(base, { headers: { Range: `bytes=${start}-${end - 1}` }, signal: AbortSignal.timeout(20000) });
+  const r = await fetch(base, { headers: { Range: `bytes=${start}-${end - 1}` }, signal: fetchSignal(deadline) });
   if (!r.ok) throw new Error(`AWS ${r.status}`);
   return new Uint8Array(await r.arrayBuffer());
 }
@@ -74,14 +80,16 @@ function toPayload(bytes, runMs, fh) {
 
 async function fetchWind() {
   const now = Date.now();
+  const deadline = AbortSignal.timeout(TOTAL_DEADLINE_MS);
   const latestRun = Math.floor(now / (6 * HOUR)) * 6 * HOUR;
   let lastError = null;
   for (let back = 0; back < 5; back++) {
     const runMs = latestRun - back * 6 * HOUR;
     const fh = Math.max(0, Math.round((now - runMs) / (3 * HOUR)) * 3);
     for (const source of [fromNomads, fromAws]) {
+      if (deadline.aborted) throw new Error(`GFS: batas waktu ${TOTAL_DEADLINE_MS / 1000} detik habis (${lastError?.message || "belum ada jawaban"})`);
       try {
-        return toPayload(await source(runMs, fh), runMs, fh);
+        return toPayload(await source(runMs, fh, deadline), runMs, fh);
       } catch (e) {
         lastError = e; // run ini belum terbit (404) atau sumbernya bermasalah → coba jalur/run berikutnya
       }

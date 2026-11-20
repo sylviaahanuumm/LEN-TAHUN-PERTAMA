@@ -102,9 +102,17 @@ function vercelApiPlugin() {
       server.middlewares.use(async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
         if (!req.url?.startsWith("/api/")) return next();
 
-        res.setHeader("Access-Control-Allow-Origin", "*");
-        res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
+        // T-65 (kesepakatan #6): CORS hanya diberikan ke dashboard statis lokal di port 8000. Halaman dari origin lain
+        // tidak mendapat header Access-Control-Allow-Origin, sehingga browser tidak mengizinkannya membaca respons.
+        // Permintaan dari dev server sendiri (127.0.0.1:5174) satu origin, jadi tidak butuh header CORS.
+        const ALLOWED_ORIGINS = ["http://127.0.0.1:8000", "http://localhost:8000"];
+        const origin = req.headers.origin;
+        if (origin && ALLOWED_ORIGINS.includes(origin)) {
+          res.setHeader("Access-Control-Allow-Origin", origin);
+          res.setHeader("Vary", "Origin");
+          res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+          res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
+        }
         if (req.method === "OPTIONS") { res.statusCode = 204; return res.end(); }
 
         if (req.url.startsWith("/api/ais/")) {
@@ -132,7 +140,9 @@ function vercelApiPlugin() {
             let size = 0;
             req.on("data", (c: Buffer) => {
               size += c.length;
-              if (size > MAX_BODY_BYTES * 16) { req.destroy(); resolve(true); return; } // kiriman sangat besar: putus
+              // K-20: request tidak di-destroy di sini, supaya respons 413 masih bisa terkirim. Kiriman lebih dari 16 MB
+              // langsung dijawab 413 (sisa kiriman diabaikan); socket ditutup setelah respons selesai terkirim.
+              if (size > MAX_BODY_BYTES * 16) { resolve(true); return; }
               if (size > MAX_BODY_BYTES) return; // lewat 1 MB: sisa kiriman dibuang, tidak disimpan
               chunks.push(c);
             });
@@ -143,8 +153,11 @@ function vercelApiPlugin() {
             });
           });
           if (tooLarge) {
+            // K-20: respons 413 dikirim dulu sampai selesai; baru setelah itu socket ditutup (Connection: close).
             res.statusCode = 413;
             res.setHeader("Content-Type", "application/json");
+            res.setHeader("Connection", "close");
+            res.once("finish", () => req.destroy());
             return res.end(JSON.stringify({ error: "Request body terlalu besar (maksimal 1 MB)" }));
           }
         }

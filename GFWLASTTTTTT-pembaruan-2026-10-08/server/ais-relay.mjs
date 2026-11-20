@@ -259,12 +259,19 @@ function connect() {
   socket = ws;
   let receiving = false;
 
+  // T-49: setiap listener memeriksa socket === ws, supaya event dari socket lama (setelah stop() atau
+  // penyambungan ulang) tidak mengubah status atau data koneksi yang baru.
   ws.addEventListener("open", () => {
+    if (socket !== ws) {
+      try { ws.close(); } catch (err) { console.warn("[ais-relay] galat diabaikan:", err?.message || err); }
+      return;
+    }
     // AISStream mewajibkan pesan langganan dikirim dalam 3 detik setelah tersambung.
     ws.send(JSON.stringify({ APIKey: key, BoundingBoxes: [BOUNDING_BOX], FilterMessageTypes: MESSAGE_TYPES }));
   });
 
   ws.addEventListener("message", (event) => {
+    if (socket !== ws) return;
     const receivedAt = Date.now();
     let msg;
     try {

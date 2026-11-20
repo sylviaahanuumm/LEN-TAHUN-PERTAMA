@@ -16,6 +16,7 @@ const STOPPED_KN = 0.5;
 const FLUSH_INTERVAL_MS = 5000;
 const PRUNE_INTERVAL_MS = 60 * 60_000;
 const STATS_TTL_MS = 30_000;
+const MAX_PENDING_POSITIONS = 50_000; // K-17: batas antrean saat database terus gagal, supaya memori tidak habis
 
 let db = null;
 let insertPosition = null;
@@ -85,6 +86,10 @@ export async function open() {
     lastError = null;
     console.log(`[ais-history] menyimpan riwayat AIS ke ${dbFile} (${retentionDays()} hari)`);
   } catch (err) {
+    // T-47: timer yang sempat dibuat dihentikan dan database ditutup, supaya tidak ada interval yang bocor.
+    for (const timer of timers) clearInterval(timer);
+    timers = [];
+    try { db?.close(); } catch (closeErr) { console.warn("[ais-history] galat diabaikan:", closeErr?.message || closeErr); }
     db = null;
     lastError = err?.message || String(err);
     console.error("[ais-history] riwayat AIS tidak aktif:", lastError);
@@ -94,12 +99,19 @@ export async function open() {
 // Dipanggil relay setiap ada posisi baru; disimpan hanya jika jeda dari titik terakhir sudah cukup.
 export function recordPosition(ship, receivedAt) {
   if (!db) return;
+  // T-48: data cacat (MMSI bukan bilangan bulat positif, lintang/bujur bukan angka atau di luar batas) dibuang di sini,
+  // supaya tidak menggagalkan satu batch penyimpanan berisi posisi lain yang sah.
+  if (!Number.isInteger(ship?.mmsi) || ship.mmsi <= 0) return;
+  if (!Number.isFinite(ship.lat) || !Number.isFinite(ship.lon) || Math.abs(ship.lat) > 90 || Math.abs(ship.lon) > 180) return;
   const ts = Math.floor(receivedAt / 1000);
   const prev = lastStoredTs.get(ship.mmsi);
-  const minGap = ship.speed != null && ship.speed < STOPPED_KN ? STOPPED_INTERVAL_S : MOVING_INTERVAL_S;
-  if (prev != null && ts - prev < minGap) return;
+  // R-076: pemeriksaan kosong ditulis eksplisit (=== / !==), bukan != null.
+  const hasSpeed = ship.speed !== null && ship.speed !== undefined;
+  const minGap = hasSpeed && ship.speed < STOPPED_KN ? STOPPED_INTERVAL_S : MOVING_INTERVAL_S;
+  if (prev !== undefined && ts - prev < minGap) return;
   lastStoredTs.set(ship.mmsi, ts);
-  pendingPositions.push([ship.mmsi, ts, ship.lat, ship.lon, ship.speed, ship.course, ship.heading, ship.navStatus]);
+  // T-48: kolom opsional yang tidak ada disimpan sebagai NULL (undefined tidak bisa disimpan SQLite dan menggagalkan batch).
+  pendingPositions.push([ship.mmsi, ts, ship.lat, ship.lon, ship.speed ?? null, ship.course ?? null, ship.heading ?? null, ship.navStatus ?? null]);
   pendingVessels.set(ship.mmsi, ship);
 }
 
@@ -124,9 +136,18 @@ function flush() {
     db.exec("COMMIT");
     lastError = null;
   } catch (err) {
-    try { db.exec("ROLLBACK"); } catch (err) { console.warn("[ais-history] galat diabaikan:", err?.message || err); }
+    try { db.exec("ROLLBACK"); } catch (rollbackErr) { console.warn("[ais-history] galat diabaikan:", rollbackErr?.message || rollbackErr); }
+    // K-17: batch yang gagal dikembalikan ke antrean (di depan, urutan tetap) supaya dicoba lagi pada flush berikutnya,
+    // bukan hilang. Data kapal yang lebih baru (sudah masuk antrean lagi) tidak ditimpa data lama.
+    pendingPositions.unshift(...positions);
+    if (pendingPositions.length > MAX_PENDING_POSITIONS) {
+      const dropped = pendingPositions.length - MAX_PENDING_POSITIONS;
+      pendingPositions.splice(0, dropped);
+      console.warn(`[ais-history] antrean penuh, ${dropped} posisi tertua dibuang`);
+    }
+    for (const ship of vessels) if (!pendingVessels.has(ship.mmsi)) pendingVessels.set(ship.mmsi, ship);
     lastError = err?.message || String(err);
-    console.error("[ais-history] gagal menyimpan:", lastError);
+    console.error("[ais-history] gagal menyimpan, dicoba lagi:", lastError);
   }
 }
 
