@@ -27,7 +27,8 @@ const Alert = React.forwardRef<
 ));
 Alert.displayName = "Alert";
 
-const AlertTitle = React.forwardRef<HTMLParagraphElement, React.HTMLAttributes<HTMLHeadingElement>>(
+// M-138: tipe ref sesuai elemen yang di-render (<h5> = HTMLHeadingElement).
+const AlertTitle = React.forwardRef<HTMLHeadingElement, React.HTMLAttributes<HTMLHeadingElement>>(
   ({ className, ...props }, ref) => (
     <h5
       ref={ref}

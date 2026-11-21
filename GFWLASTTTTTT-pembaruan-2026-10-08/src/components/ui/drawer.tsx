@@ -29,12 +29,15 @@ const DrawerOverlay = React.forwardRef<
 ));
 DrawerOverlay.displayName = DrawerPrimitive.Overlay.displayName;
 
+// R-096: prop overlay (bawaan true) supaya consumer bisa memakai drawer tanpa latar peredup.
+// R-097: jarak atas bawaan mt-24 tetap dipakai, tetapi bisa diganti lewat className (cn memakai tailwind-merge,
+// jadi mis. className="mt-0" atau "mt-8" menimpa mt-24). Sesuaikan bila tinggi header berbeda.
 const DrawerContent = React.forwardRef<
   React.ElementRef<typeof DrawerPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof DrawerPrimitive.Content>
->(({ className, children, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof DrawerPrimitive.Content> & { overlay?: boolean }
+>(({ className, children, overlay = true, ...props }, ref) => (
   <DrawerPortal>
-    <DrawerOverlay />
+    {overlay && <DrawerOverlay />}
     <DrawerPrimitive.Content
       ref={ref}
       className={cn(

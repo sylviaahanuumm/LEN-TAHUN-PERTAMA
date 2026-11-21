@@ -57,8 +57,10 @@ const TableHead = React.forwardRef<
   HTMLTableCellElement,
   React.ThHTMLAttributes<HTMLTableCellElement>
 >(({ className, ...props }, ref) => (
+  // R-113: scope="col" sebagai bawaan (header kolom); tetap bisa diganti lewat props, mis. scope="row".
   <th
     ref={ref}
+    scope="col"
     className={cn(
       "h-10 px-2 text-left align-middle font-medium text-muted-foreground [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
       className,

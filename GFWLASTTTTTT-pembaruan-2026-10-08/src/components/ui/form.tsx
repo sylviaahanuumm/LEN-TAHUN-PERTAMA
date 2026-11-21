@@ -22,6 +22,9 @@ type FormFieldContextValue<
   name: TName;
 };
 
+// R-099 (catatan): konteks ini bertipe luas (FieldPath<FieldValues>), sehingga name dari useFormField() tidak
+// menyempit ke TName yang dikirim ke <FormField>. Ini pola bawaan shadcn/ui dan tidak menimbulkan bug saat
+// runtime; sengaja dibiarkan, dicatat sebagai informasi.
 const FormFieldContext = React.createContext<FormFieldContextValue | null>(null);
 
 const FormField = <
@@ -66,6 +69,12 @@ const useFormField = () => {
 
 type FormItemContextValue = {
   id: string;
+  // R-100: FormDescription/FormMessage mendaftarkan diri saat benar-benar tampil, supaya aria-describedby di
+  // FormControl hanya merujuk id elemen yang ada.
+  hasDescription: boolean;
+  hasMessage: boolean;
+  setHasDescription: (value: boolean) => void;
+  setHasMessage: (value: boolean) => void;
 };
 
 const FormItemContext = React.createContext<FormItemContextValue | null>(null);
@@ -73,9 +82,15 @@ const FormItemContext = React.createContext<FormItemContextValue | null>(null);
 const FormItem = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
   ({ className, ...props }, ref) => {
     const id = React.useId();
+    const [hasDescription, setHasDescription] = React.useState(false);
+    const [hasMessage, setHasMessage] = React.useState(false);
+    const value = React.useMemo(
+      () => ({ id, hasDescription, hasMessage, setHasDescription, setHasMessage }),
+      [id, hasDescription, hasMessage],
+    );
 
     return (
-      <FormItemContext.Provider value={{ id }}>
+      <FormItemContext.Provider value={value}>
         <div ref={ref} className={cn("space-y-2", className)} {...props} />
       </FormItemContext.Provider>
     );
@@ -105,12 +120,18 @@ const FormControl = React.forwardRef<
   React.ComponentPropsWithoutRef<typeof Slot>
 >(({ ...props }, ref) => {
   const { error, formItemId, formDescriptionId, formMessageId } = useFormField();
+  const item = React.useContext(FormItemContext);
+  // R-100: hanya id deskripsi/pesan yang memang sedang tampil; bila tidak ada sama sekali, atribut tidak dipasang.
+  const describedBy =
+    [item?.hasDescription ? formDescriptionId : "", error && item?.hasMessage ? formMessageId : ""]
+      .filter(Boolean)
+      .join(" ") || undefined;
 
   return (
     <Slot
       ref={ref}
       id={formItemId}
-      aria-describedby={!error ? `${formDescriptionId}` : `${formDescriptionId} ${formMessageId}`}
+      aria-describedby={describedBy}
       aria-invalid={!!error}
       {...props}
     />
@@ -123,6 +144,12 @@ const FormDescription = React.forwardRef<
   React.HTMLAttributes<HTMLParagraphElement>
 >(({ className, ...props }, ref) => {
   const { formDescriptionId } = useFormField();
+  const setHasDescription = React.useContext(FormItemContext)?.setHasDescription;
+  React.useEffect(() => {
+    if (!setHasDescription) return;
+    setHasDescription(true);
+    return () => setHasDescription(false);
+  }, [setHasDescription]);
 
   return (
     <p
@@ -140,7 +167,16 @@ const FormMessage = React.forwardRef<
   React.HTMLAttributes<HTMLParagraphElement>
 >(({ className, children, ...props }, ref) => {
   const { error, formMessageId } = useFormField();
-  const body = error ? String(error?.message ?? "") : children;
+  // R-101: "?." setelah error dibuang (error sudah pasti ada di cabang ini). "?? \"\"" tetap dipakai karena
+  // FieldError.message di react-hook-form bertipe opsional (message?: Message), jadi bisa undefined.
+  const body = error ? String(error.message ?? "") : children;
+  const hasBody = Boolean(body);
+  const setHasMessage = React.useContext(FormItemContext)?.setHasMessage;
+  React.useEffect(() => {
+    if (!setHasMessage || !hasBody) return;
+    setHasMessage(true);
+    return () => setHasMessage(false);
+  }, [setHasMessage, hasBody]);
 
   if (!body) {
     return null;

@@ -22,27 +22,31 @@ const PaginationContent = React.forwardRef<HTMLUListElement, React.ComponentProp
 PaginationContent.displayName = "PaginationContent";
 
 const PaginationItem = React.forwardRef<HTMLLIElement, React.ComponentProps<"li">>(
-  ({ className, ...props }, ref) => <li ref={ref} className={cn("", className)} {...props} />,
+  ({ className, ...props }, ref) => <li ref={ref} className={cn(className)} {...props} />, // R-105
 );
 PaginationItem.displayName = "PaginationItem";
 
 type PaginationLinkProps = {
   isActive?: boolean;
 } & Pick<ButtonProps, "size"> &
-  React.ComponentProps<"a">;
+  React.ComponentPropsWithoutRef<"a">;
 
-const PaginationLink = ({ className, isActive, size = "icon", ...props }: PaginationLinkProps) => (
-  <a
-    aria-current={isActive ? "page" : undefined}
-    className={cn(
-      buttonVariants({
-        variant: isActive ? "outline" : "ghost",
-        size,
-      }),
-      className,
-    )}
-    {...props}
-  />
+// M-143: forwardRef seperti PaginationContent/PaginationItem, sehingga ref sampai ke <a> (fokus, scrollIntoView).
+const PaginationLink = React.forwardRef<HTMLAnchorElement, PaginationLinkProps>(
+  ({ className, isActive, size = "icon", ...props }, ref) => (
+    <a
+      ref={ref}
+      aria-current={isActive ? "page" : undefined}
+      className={cn(
+        buttonVariants({
+          variant: isActive ? "outline" : "ghost",
+          size,
+        }),
+        className,
+      )}
+      {...props}
+    />
+  ),
 );
 PaginationLink.displayName = "PaginationLink";
 

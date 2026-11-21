@@ -199,14 +199,17 @@ const MenubarSeparator = React.forwardRef<
 ));
 MenubarSeparator.displayName = MenubarPrimitive.Separator.displayName;
 
-const MenubarShortcut = ({ className, ...props }: React.HTMLAttributes<HTMLSpanElement>) => {
-  return (
+// R-103: forwardRef seperti komponen lain di file ini (dan sama dengan ContextMenuShortcut/DropdownMenuShortcut),
+// sehingga consumer bisa mengirim ref ke <span>.
+const MenubarShortcut = React.forwardRef<HTMLSpanElement, React.HTMLAttributes<HTMLSpanElement>>(
+  ({ className, ...props }, ref) => (
     <span
+      ref={ref}
       className={cn("ml-auto text-xs tracking-widest text-muted-foreground", className)}
       {...props}
     />
-  );
-};
+  ),
+);
 MenubarShortcut.displayName = "MenubarShortcut";
 
 export {

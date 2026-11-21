@@ -1,6 +1,8 @@
+import type { ComponentProps } from "react";
 import { Toaster as Sonner } from "sonner";
 
-type ToasterProps = React.ComponentProps<typeof Sonner>;
+// R-111: tipe diimpor eksplisit dari "react", tidak bergantung pada namespace global React.
+type ToasterProps = ComponentProps<typeof Sonner>;
 
 const Toaster = ({ ...props }: ToasterProps) => {
   return (

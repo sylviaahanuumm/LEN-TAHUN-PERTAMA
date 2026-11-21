@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { DEFAULT_LOCALE } from "@/lib/locale";
 import type { Mode } from "@/lib/types";
+import { Z_LAYER } from "@/lib/layers";
 
 type Props = {
   mode: Mode | null;
@@ -19,18 +20,13 @@ export default function TopBar({
   mode, online, shipCount, msgCount, lastUpdate,
   onSetMode, onTogglePanel, panelOpen, aisKey, onAisKeyChange,
 }: Props) {
-  const [now, setNow] = useState(Date.now());
+  // M-136: detak tiap detik dipindah ke komponen kecil AgoLabel, sehingga TopBar tidak lagi di-render ulang
+  // setiap detik; hanya teks "· Ns" yang berubah.
   const [showKey, setShowKey] = useState(false);
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  const ago = lastUpdate ? Math.max(0, Math.floor((now - lastUpdate) / 1000)) : null;
   const stamp = lastUpdate ? new Date(lastUpdate).toLocaleTimeString(DEFAULT_LOCALE) : "—";
 
   return (
-    <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[1000] max-w-[calc(100vw-1rem)]">
+    <div className={`fixed top-3 left-1/2 -translate-x-1/2 ${Z_LAYER.panel} max-w-[calc(100vw-1rem)]`}>
       <div className="glass rounded-full px-2 py-1.5 flex items-center gap-2 overflow-x-auto no-scrollbar">
         <PillBtn active={mode === "ais"} onClick={() => onSetMode(mode === "ais" ? null : "ais")} color="ais">
           <span className="dot" style={{ background: "var(--primary)" }} /> AISStream Live
@@ -54,7 +50,7 @@ export default function TopBar({
         <div className="text-xs whitespace-nowrap px-1">🚢 <span className="text-foreground">{shipCount}</span></div>
         <div className="text-xs whitespace-nowrap px-1">📡 <span className="text-foreground">{msgCount}</span></div>
         <div className="text-xs whitespace-nowrap px-1 text-muted-foreground">
-          {stamp}{ago != null ? ` · ${ago}s` : ""}
+          {stamp}<AgoLabel lastUpdate={lastUpdate} />
         </div>
 
         <button
@@ -76,24 +72,41 @@ export default function TopBar({
             placeholder="Tempel API key dari aisstream.io"
             className="w-full bg-input border border-border rounded-md px-2 py-1.5 text-foreground outline-none focus:border-primary"
           />
-          <p className="mt-1 text-muted-foreground">Disimpan di browser (localStorage).</p>
+          {/* M-137: key hanya dipegang di memori komponen induk (state), tidak ditulis ke localStorage yang bisa
+              dibaca script lain di halaman. Konsekuensinya key harus ditempel ulang setelah halaman dimuat ulang.
+              Komponen induk JANGAN menyimpannya ke localStorage; bila perlu bertahan, cukup sessionStorage. */}
+          <p className="mt-1 text-muted-foreground">Hanya disimpan di memori halaman ini; hilang saat halaman dimuat ulang.</p>
         </div>
       )}
 
-      <style>{`
-        .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
-      `}</style>
+      {/* R-085: aturan .dot dipindah ke src/styles.css (didefinisikan sekali, bukan disisipkan tiap render). */}
     </div>
   );
 }
 
+// M-136: komponen kecil yang mengurus detak 1 detiknya sendiri. C-6: pemeriksaan kosong ditulis eksplisit.
+function AgoLabel({ lastUpdate }: { lastUpdate: number | null }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (lastUpdate === null) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [lastUpdate]);
+  const ago = lastUpdate !== null ? Math.max(0, Math.floor((now - lastUpdate) / 1000)) : null;
+  return ago !== null ? <>{` · ${ago}s`}</> : null;
+}
+
+// R-086: warna cincin lewat objek lookup, bukan ternary bersarang.
+const RING: Record<"ais" | "gfw" | "neutral", string> = {
+  ais: "var(--primary)",
+  gfw: "var(--ais-fast)",
+  neutral: "var(--muted-foreground)",
+};
+
 function PillBtn({
   active, onClick, children, color,
 }: { active: boolean; onClick: () => void; children: React.ReactNode; color: "ais" | "gfw" | "neutral" }) {
-  const ring =
-    color === "ais" ? "var(--primary)" :
-    color === "gfw" ? "var(--ais-fast)" :
-    "var(--muted-foreground)";
+  const ring = RING[color];
   return (
     <button
       onClick={onClick}

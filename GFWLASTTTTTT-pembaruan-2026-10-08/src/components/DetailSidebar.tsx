@@ -94,12 +94,12 @@ function AisDetail({ s }: { s: import("@/lib/types").AisShip }) {
         <Row k="Kecepatan" v={
           <span className="inline-flex items-center gap-1.5">
             <span className="inline-block w-2 h-2 rounded-full" style={{ background: sc, boxShadow: `0 0 6px ${sc}` }} />
-            <span style={{ color: sc }}>{s.speed != null ? `${s.speed.toFixed(1)} kn` : "—"}</span>
+            <span style={{ color: sc }}>{s.speed !== null && s.speed !== undefined ? `${s.speed.toFixed(1)} kn` : "—"}</span>
             <span className="text-muted-foreground">({speedLabel(s.speed)})</span>
           </span>
         } />
-        <Row k="Course" v={s.course != null ? `${s.course.toFixed(0)}°` : "—"} />
-        <Row k="Heading" v={s.heading != null ? `${s.heading}°` : "—"} />
+        <Row k="Course" v={s.course !== null && s.course !== undefined ? `${s.course.toFixed(0)}°` : "—"} />
+        <Row k="Heading" v={s.heading !== null && s.heading !== undefined ? `${s.heading}°` : "—"} />
         <Row k="Update" v={new Date(s.updatedAt).toLocaleTimeString(DEFAULT_LOCALE)} />
       </Section>
       <Section title="Trail AIS tersimpan">
@@ -129,7 +129,7 @@ function GfwDetail({ e }: { e: import("@/lib/types").GfwEvent }) {
             <span style={{ color: ec }}>{e.type}</span>
           </span>
         } />
-        <Row k="Durasi" v={e.durationHours != null ? `${e.durationHours.toFixed(1)} jam` : "—"} />
+        <Row k="Durasi" v={e.durationHours !== null && e.durationHours !== undefined ? `${e.durationHours.toFixed(1)} jam` : "—"} />
         <Row k="Mulai" v={e.start ? new Date(e.start).toLocaleString(DEFAULT_LOCALE) : "—"} />
         <Row k="Selesai" v={e.end ? new Date(e.end).toLocaleString(DEFAULT_LOCALE) : "—"} />
       </Section>

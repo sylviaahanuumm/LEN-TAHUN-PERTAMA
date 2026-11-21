@@ -35,7 +35,12 @@ function NotFoundComponent() {
 
 // C.4 (laporan audit): memakai tipe resmi router (error bertipe unknown), bukan tipe buatan sendiri.
 function ErrorComponent({ error, reset }: ErrorComponentProps) {
-  console.error(error);
+  // R-123: stack lengkap hanya di mode pengembangan; di produksi konsol browser cukup berisi pesannya.
+  if (import.meta.env.DEV) {
+    console.error(error);
+  } else {
+    console.error("[app] halaman gagal dimuat:", error instanceof Error ? error.message : String(error));
+  }
   const router = useRouter();
 
   return (
@@ -50,6 +55,8 @@ function ErrorComponent({ error, reset }: ErrorComponentProps) {
         <div className="mt-6 flex flex-wrap justify-center gap-2">
           <button
             onClick={() => {
+              // R-124: dua langkah ini memang berpasangan (pola pemulihan TanStack Router): invalidate menandai
+              // data loader usang, reset me-render ulang pohon route. Jangan hapus salah satunya.
               router.invalidate();
               reset();
             }}
@@ -57,6 +64,8 @@ function ErrorComponent({ error, reset }: ErrorComponentProps) {
           >
             Try again
           </button>
+          {/* R-125: sengaja <a> biasa (muat ulang halaman penuh), bukan <Link>: saat error, state router bisa
+              rusak, jadi pemulihan paling aman adalah memulai ulang halaman. */}
           <a
             href="/"
             className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"

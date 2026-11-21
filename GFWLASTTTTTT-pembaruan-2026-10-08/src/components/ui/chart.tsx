@@ -61,8 +61,26 @@ const ChartContainer = React.forwardRef<
 });
 ChartContainer.displayName = "Chart";
 
+// T-58: id, key, dan warna disisipkan ke blok <style>, jadi hanya bentuk yang aman yang diterima. Nilai lain
+// dilewati (dengan peringatan), supaya tidak ada yang bisa keluar dari aturan CSS (mis. "} @import ...").
+const SAFE_CSS_IDENT_RE = /^[A-Za-z0-9_-]+$/;
+const SAFE_CSS_COLOR_RE = /^[#A-Za-z0-9(),.%\s\/+-]+$/;
+
+function isSafeCssColor(color: string): boolean {
+  return SAFE_CSS_COLOR_RE.test(color) && !color.includes("/*");
+}
+
 const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
-  const colorConfig = Object.entries(config).filter(([, config]) => config.theme || config.color);
+  if (!SAFE_CSS_IDENT_RE.test(id)) {
+    console.warn("[chart] id grafik tidak aman untuk CSS, gaya warna dilewati:", id);
+    return null;
+  }
+  const colorConfig = Object.entries(config).filter(([key, itemConfig]) => {
+    if (!itemConfig.theme && !itemConfig.color) return false;
+    if (SAFE_CSS_IDENT_RE.test(key)) return true;
+    console.warn("[chart] key konfigurasi tidak aman untuk CSS, dilewati:", key);
+    return false;
+  });
 
   if (!colorConfig.length) {
     return null;
@@ -78,7 +96,12 @@ ${prefix} [data-chart=${id}] {
 ${colorConfig
   .map(([key, itemConfig]) => {
     const color = itemConfig.theme?.[theme as keyof typeof itemConfig.theme] || itemConfig.color;
-    return color ? `  --color-${key}: ${color};` : null;
+    if (!color) return null;
+    if (!isSafeCssColor(color)) {
+      console.warn("[chart] warna tidak aman untuk CSS, dilewati:", key, color);
+      return null;
+    }
+    return `  --color-${key}: ${color};`;
   })
   .join("\n")}
 }
@@ -174,7 +197,7 @@ const ChartTooltipContent = React.forwardRef<
 
               return (
                 <div
-                  key={item.dataKey}
+                  key={`${String(item.dataKey ?? item.name ?? "value")}-${index}`} // M-140: unik walau dataKey sama
                   className={cn(
                     "flex w-full flex-wrap items-stretch gap-2 [&>svg]:h-2.5 [&>svg]:w-2.5 [&>svg]:text-muted-foreground",
                     indicator === "dot" && "items-center",
@@ -220,7 +243,8 @@ const ChartTooltipContent = React.forwardRef<
                             {itemConfig?.label || item.name}
                           </span>
                         </div>
-                        {item.value && (
+                        {/* T-59: nilai 0 tetap ditampilkan; yang disembunyikan hanya nilai kosong */}
+                        {item.value !== null && item.value !== undefined && (
                           <span className="font-mono font-medium tabular-nums text-foreground">
                             {item.value.toLocaleString()}
                           </span>
@@ -265,13 +289,13 @@ const ChartLegendContent = React.forwardRef<
     >
       {payload
         .filter((item) => item.type !== "none")
-        .map((item) => {
+        .map((item, index: number) => {
           const key = `${nameKey || item.dataKey || "value"}`;
           const itemConfig = getPayloadConfigFromPayload(config, item, key);
 
           return (
             <div
-              key={item.value}
+              key={`${String(item.value)}-${index}`} // M-140: unik walau value sama
               className={cn(
                 "flex items-center gap-1.5 [&>svg]:h-3 [&>svg]:w-3 [&>svg]:text-muted-foreground",
               )}
@@ -306,16 +330,19 @@ function getPayloadConfigFromPayload(config: ChartConfig, payload: unknown, key:
       ? payload.payload
       : undefined;
 
+  // R-092: setelah pemeriksaan bertipe object, payload dibaca sebagai Record<string, unknown> sekali saja,
+  // bukan lewat cast ke keyof dari payload (yang bertipe never dan hanya membungkam compiler).
+  const record = payload as Record<string, unknown>;
+  const nested = payloadPayload as Record<string, unknown> | undefined;
+  const own = record[key];
+  const inner = nested?.[key];
+
   let configLabelKey: string = key;
 
-  if (key in payload && typeof payload[key as keyof typeof payload] === "string") {
-    configLabelKey = payload[key as keyof typeof payload] as string;
-  } else if (
-    payloadPayload &&
-    key in payloadPayload &&
-    typeof payloadPayload[key as keyof typeof payloadPayload] === "string"
-  ) {
-    configLabelKey = payloadPayload[key as keyof typeof payloadPayload] as string;
+  if (typeof own === "string") {
+    configLabelKey = own;
+  } else if (typeof inner === "string") {
+    configLabelKey = inner;
   }
 
   return configLabelKey in config ? config[configLabelKey] : config[key as keyof typeof config];

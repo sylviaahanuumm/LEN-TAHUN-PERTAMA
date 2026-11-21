@@ -52,6 +52,9 @@ const ContextMenuSubContent = React.forwardRef<
 ));
 ContextMenuSubContent.displayName = ContextMenuPrimitive.SubContent.displayName;
 
+// R-093: ContextMenuContent SUDAH membungkus isinya dengan ContextMenuPrimitive.Portal. Jangan bungkus lagi dengan
+// ContextMenuPortal yang diekspor (portal di dalam portal membuat penempatan DOM dan tumpukan z-index kacau).
+// ContextMenuPortal tetap diekspor hanya untuk isi kustom yang tidak memakai ContextMenuContent.
 const ContextMenuContent = React.forwardRef<
   React.ElementRef<typeof ContextMenuPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof ContextMenuPrimitive.Content>
@@ -158,14 +161,16 @@ const ContextMenuSeparator = React.forwardRef<
 ));
 ContextMenuSeparator.displayName = ContextMenuPrimitive.Separator.displayName;
 
-const ContextMenuShortcut = ({ className, ...props }: React.HTMLAttributes<HTMLSpanElement>) => {
-  return (
+// R-094: forwardRef seperti komponen lain di file ini, sehingga ref sampai ke <span>.
+const ContextMenuShortcut = React.forwardRef<HTMLSpanElement, React.HTMLAttributes<HTMLSpanElement>>(
+  ({ className, ...props }, ref) => (
     <span
+      ref={ref}
       className={cn("ml-auto text-xs tracking-widest text-muted-foreground", className)}
       {...props}
     />
-  );
-};
+  ),
+);
 ContextMenuShortcut.displayName = "ContextMenuShortcut";
 
 export {

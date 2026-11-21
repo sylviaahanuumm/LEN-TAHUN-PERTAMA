@@ -3,6 +3,10 @@
 @import "tw-animate-css";
 @import "leaflet/dist/leaflet.css";
 
+/* M-170: aplikasi hanya bertema gelap (nilai gelap ada di :root) dan blok .dark yang tidak pernah aktif sudah
+ * dibuang. Baris di bawah sengaja dipertahankan: tanpa baris ini Tailwind memakai prefers-color-scheme untuk
+ * varian dark:, sehingga kelas dark: bawaan komponen shadcn (mis. alert.tsx) tiba-tiba aktif mengikuti
+ * pengaturan sistem operasi. Dengan baris ini kelas tersebut tetap tidak aktif, sama seperti sebelumnya. */
 @custom-variant dark (&:is(.dark *));
 
 /*
@@ -11,11 +15,11 @@
  * The @theme inline block maps CSS custom properties to Tailwind utility
  * classes (e.g. --color-primary -> bg-primary, text-primary).
  *
- * The :root and .dark blocks define the actual color values using oklch.
+ * The :root block defines the actual color values using oklch (dark-only app).
  * All colors MUST use oklch format.
  *
  * To add a new semantic color:
- * 1. Add the variable to :root (light value) and .dark (dark value)
+ * 1. Add the variable to :root
  * 2. Register it in @theme inline as --color-<name>: var(--<name>)
  */
 
@@ -60,6 +64,16 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  /* R-134: token maritim juga tersedia sebagai utility Tailwind (mis. bg-ais-stop, text-gfw-fishing). */
+  --color-ais-stop: var(--ais-stop);
+  --color-ais-slow: var(--ais-slow);
+  --color-ais-normal: var(--ais-normal);
+  --color-ais-fast: var(--ais-fast);
+  --color-ais-unknown: var(--ais-unknown);
+  --color-gfw-fishing: var(--gfw-fishing);
+  --color-gfw-encounter: var(--gfw-encounter);
+  --color-gfw-loitering: var(--gfw-loitering);
+  --color-gfw-other: var(--gfw-other);
 }
 
 :root {
@@ -113,39 +127,13 @@
   --sidebar-ring: oklch(0.685 0.156 251);
 }
 
-.dark {
-  --background: oklch(0.129 0.042 264.695);
-  --foreground: oklch(0.984 0.003 247.858);
-  --card: oklch(0.208 0.042 265.755);
-  --card-foreground: oklch(0.984 0.003 247.858);
-  --popover: oklch(0.208 0.042 265.755);
-  --popover-foreground: oklch(0.984 0.003 247.858);
-  --primary: oklch(0.929 0.013 255.508);
-  --primary-foreground: oklch(0.208 0.042 265.755);
-  --secondary: oklch(0.279 0.041 260.031);
-  --secondary-foreground: oklch(0.984 0.003 247.858);
-  --muted: oklch(0.279 0.041 260.031);
-  --muted-foreground: oklch(0.704 0.04 256.788);
-  --accent: oklch(0.279 0.041 260.031);
-  --accent-foreground: oklch(0.984 0.003 247.858);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.984 0.003 247.858);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.551 0.027 264.364);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.208 0.042 265.755);
-  --sidebar-foreground: oklch(0.984 0.003 247.858);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.984 0.003 247.858);
-  --sidebar-accent: oklch(0.279 0.041 260.031);
-  --sidebar-accent-foreground: oklch(0.984 0.003 247.858);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.551 0.027 264.364);
+/* R-135: color-mix() butuh Safari >= 16.2 / Chromium >= 111. Di browser yang lebih lama --surface-glass menjadi
+ * tidak valid dan .glass kehilangan latar. Cadangan ditaruh di @supports, karena deklarasi custom property
+ * kedua selalu dianggap sah saat dibaca sehingga cadangan biasa (dua baris berurutan) tidak akan terpakai. */
+@supports not (color: color-mix(in oklab, red 50%, transparent)) {
+  :root {
+    --surface-glass: var(--card);
+  }
 }
 
 @layer base {
@@ -176,6 +164,9 @@
   50% { opacity: 0.35; }
 }
 .dot-blink { animation: pulse-dot 1.4s ease-in-out infinite; }
+
+/* R-085: titik warna di tombol TopBar (dulu disisipkan lewat <style> di dalam render TopBar). */
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
 
 /* Leaflet dark adjustments */
 .leaflet-container {

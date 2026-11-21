@@ -73,19 +73,23 @@ const SidebarProvider = React.forwardRef<
     // We use openProp and setOpenProp for control from outside the component.
     const [_open, _setOpen] = React.useState(defaultOpen);
     const open = openProp ?? _open;
+    // R-109: nilai open terbaru dibaca lewat ref, sehingga setOpen (dan toggleSidebar serta listener keyboard)
+    // tidak dibuat ulang setiap kali sidebar dibuka/ditutup.
+    const openRef = React.useRef(open);
+    openRef.current = open;
     const setOpen = React.useCallback(
       (value: boolean | ((value: boolean) => boolean)) => {
-        const openState = typeof value === "function" ? value(open) : value;
+        const openState = typeof value === "function" ? value(openRef.current) : value;
         if (setOpenProp) {
           setOpenProp(openState);
         } else {
           _setOpen(openState);
+          // M-145: cookie hanya ditulis saat komponen tidak dikendalikan induk. Saat dikendalikan (open +
+          // onOpenChange), induklah sumber kebenarannya, jadi cookie tidak boleh menyimpan nilai yang bisa usang.
+          document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`;
         }
-
-        // This sets the cookie to keep the sidebar state.
-        document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`;
       },
-      [setOpenProp, open],
+      [setOpenProp],
     );
 
     // Helper to toggle the sidebar.
@@ -96,10 +100,13 @@ const SidebarProvider = React.forwardRef<
     // Adds a keyboard shortcut to toggle the sidebar.
     React.useEffect(() => {
       const handleKeyDown = (event: KeyboardEvent) => {
-        if (event.key === SIDEBAR_KEYBOARD_SHORTCUT && (event.metaKey || event.ctrlKey)) {
-          event.preventDefault();
-          toggleSidebar();
-        }
+        if (event.key !== SIDEBAR_KEYBOARD_SHORTCUT || !(event.metaKey || event.ctrlKey)) return;
+        // M-146: Ctrl/Cmd+B saat mengetik di input, textarea, select, atau contentEditable dibiarkan untuk kolom itu
+        // (mis. huruf tebal), tidak membuka/menutup sidebar.
+        const target = event.target as HTMLElement | null;
+        if (target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))) return;
+        event.preventDefault();
+        toggleSidebar();
       };
 
       window.addEventListener("keydown", handleKeyDown);

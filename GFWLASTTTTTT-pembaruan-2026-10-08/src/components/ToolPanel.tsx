@@ -15,6 +15,40 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
+// M-134, T-55: isi JSON hanya dipakai bila status HTTP sukses. Bila gagal, pesan diambil dari detail/error
+// respons problem+json (api/_problem.js); bila isinya bukan JSON, cukup kode statusnya.
+async function readJsonOk<T>(r: Response): Promise<T> {
+  if (r.ok) return (await r.json()) as T;
+  let message = `Server error ${r.status}`;
+  try {
+    const body: { detail?: unknown; error?: unknown } = await r.json();
+    const text = body?.detail ?? body?.error;
+    if (typeof text === "string" && text) message = `${message}: ${text}`;
+  } catch {
+    // isi bukan JSON: cukup kode status
+  }
+  throw new Error(message);
+}
+
+function errorText(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
+// M-135: isi kolom Max Vessels disimpan sebagai teks dan baru diubah ke angka saat dipakai. Kolom kosong atau
+// bukan angka bulat 1–20 ditolak dengan pesan, tidak lagi terkirim sebagai max_vessels=NaN.
+const MAX_VESSELS_MIN = 1;
+const MAX_VESSELS_MAX = 20;
+
+function parseMaxVessels(text: string): number | null {
+  const n = Number(text);
+  if (text.trim() === "" || !Number.isInteger(n) || n < MAX_VESSELS_MIN || n > MAX_VESSELS_MAX) return null;
+  return n;
+}
+
+// M-133: alamat server inference wajib dari VITE_INFERENCE_URL (lihat .env.example). Tidak ada alamat cadangan
+// yang ditulis di kode; bila belum diatur, tab Inference menampilkan pesan yang jelas.
+const INFERENCE_URL: string = import.meta.env.VITE_INFERENCE_URL || "";
+
 function isoDaysAgo(n: number) {
   const d = new Date();
   d.setDate(d.getDate() - n);
@@ -35,7 +69,7 @@ export default function ToolPanel({ open, onClose, onPlotTrajectory, onClearTraj
   // Inference state
   const [infStart, setInfStart] = useState(isoDaysAgo(30));
   const [infEnd, setInfEnd] = useState(isoDaysAgo(0));
-  const [infMaxVessels, setInfMaxVessels] = useState(5);
+  const [infMaxVessels, setInfMaxVessels] = useState("5");
   const [infTask, setInfTask] = useState("all");
   const [infLoading, setInfLoading] = useState(false);
   const [infResult, setInfResult] = useState<InferenceResult | null>(null);
@@ -47,8 +81,6 @@ export default function ToolPanel({ open, onClose, onPlotTrajectory, onClearTraj
   useEffect(() => {
     if (!open) pollAbortRef.current?.abort();
   }, [open]);
-
-  const INFERENCE_URL = import.meta.env.VITE_INFERENCE_URL || "https://ngenss12-inferencegfw.hf.space";
 
   async function getBatchInferenceIfReady(): Promise<InferenceResult | null> {
     const r = await fetch(`${INFERENCE_URL}/inference/batch/latest`, {
@@ -63,7 +95,17 @@ export default function ToolPanel({ open, onClose, onPlotTrajectory, onClearTraj
   }
 
   async function runInference() {
-    setInfLoading(true); setInfResult(null); setInfError("");
+    setInfResult(null);
+    if (!INFERENCE_URL) {
+      setInfError("VITE_INFERENCE_URL belum diatur. Isi alamat server inference di .env.local (lihat .env.example).");
+      return;
+    }
+    const maxVessels = parseMaxVessels(infMaxVessels);
+    if (maxVessels === null) {
+      setInfError(`Max Vessels harus angka bulat ${MAX_VESSELS_MIN}–${MAX_VESSELS_MAX}.`);
+      return;
+    }
+    setInfLoading(true); setInfError("");
     // T-3: sesuai "Rekomendasi Perbaikan" PDF, perulangan memakai AbortController dan batas iterasi.
     pollAbortRef.current?.abort();
     const abortController = new AbortController();
@@ -81,7 +123,7 @@ export default function ToolPanel({ open, onClose, onPlotTrajectory, onClearTraj
       const params = new URLSearchParams({
         start_date: infStart,
         end_date: infEnd,
-        max_vessels: String(infMaxVessels),
+        max_vessels: String(maxVessels),
         task: infTask,
       });
       // Mulai job async
@@ -119,24 +161,26 @@ export default function ToolPanel({ open, onClose, onPlotTrajectory, onClearTraj
   useEffect(() => {
     if (tab === "query" && queries.length === 0) {
       fetch("/api/gfwr/queries")
-        .then((r) => r.json())
-        .then((j: { queries?: GfwrQuery[] }) => setQueries(j.queries || []))
+        .then((r) => readJsonOk<{ queries?: GfwrQuery[] }>(r)) // M-134: status HTTP diperiksa
+        .then((j) => setQueries(j.queries || []))
         .catch((err: unknown) => console.warn("[ToolPanel] katalog query gagal dimuat:", err));
     }
   }, [tab, queries.length]);
 
   async function doSearch() {
     if (!search.trim()) return;
-    setSearching(true); setResults(null);
+    setSearching(true); setResults(null); setSummary("");
     try {
       const r = await fetch(`/api/gfw/vessels/search?query=${encodeURIComponent(search)}&limit=20`);
       // C.4: dengan tipe yang jelas terlihat bahwa API mengirim "entries" (sebelumnya dibaca "vessels",
       // sehingga hasil pencarian selalu kosong).
-      const j: { entries?: VesselSearchResult[]; vessels?: VesselSearchResult[] } = await r.json();
+      // M-134: status HTTP diperiksa dulu; respons 4xx/5xx tidak lagi tampil sebagai "Tidak ada hasil".
+      const j = await readJsonOk<{ entries?: VesselSearchResult[]; vessels?: VesselSearchResult[] }>(r);
       setResults(j.entries || j.vessels || []);
     } catch (err) {
       console.error("[ToolPanel] pencarian kapal gagal:", err);
       setResults([]);
+      setSummary(`✗ Pencarian gagal: ${errorText(err, "tidak bisa menghubungi server")}`);
     } finally { setSearching(false); }
   }
 
@@ -252,13 +296,20 @@ export default function ToolPanel({ open, onClose, onPlotTrajectory, onClearTraj
                   onClick={async () => {
                     if (!selected) return;
                     setSummary("Memuat trajektori…");
-                    const r = await fetch(`/api/gfw/track?vessel_id=${encodeURIComponent(selected.vessel_id)}&start_date=${start}&end_date=${end}`);
-                    const j = await r.json();
-                    if (j?.track) {
-                      onPlotTrajectory(selected.vessel_id, start, end, selected.ship_name || selected.vessel_id);
-                      setSummary(`✓ ${j.count} titik · sumber ${j.source}`);
-                    } else {
-                      setSummary(`✗ ${j?.error || "gagal"}`);
+                    // T-55: galat jaringan dan status 4xx/5xx ditangkap, sehingga ringkasan tidak lagi tertahan di
+                    // "Memuat trajektori…" dan tidak ada promise rejection yang lolos.
+                    try {
+                      const r = await fetch(`/api/gfw/track?vessel_id=${encodeURIComponent(selected.vessel_id)}&start_date=${start}&end_date=${end}`);
+                      const j = await readJsonOk<{ track?: unknown; count?: number; source?: string; error?: string }>(r);
+                      if (j?.track) {
+                        onPlotTrajectory(selected.vessel_id, start, end, selected.ship_name || selected.vessel_id);
+                        setSummary(`✓ ${j.count} titik · sumber ${j.source}`);
+                      } else {
+                        setSummary(`✗ ${j?.error || "gagal"}`);
+                      }
+                    } catch (err) {
+                      console.error("[ToolPanel] trajektori gagal dimuat:", err);
+                      setSummary(`✗ ${errorText(err, "gagal memuat trajektori")}`);
                     }
                   }}
                   className="flex-1 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-xs font-medium disabled:opacity-50"
@@ -295,8 +346,8 @@ export default function ToolPanel({ open, onClose, onPlotTrajectory, onClearTraj
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="block text-xs text-muted-foreground mb-1">Max Vessels</label>
-                  <input type="number" min={1} max={20} value={infMaxVessels}
-                    onChange={(e) => setInfMaxVessels(Number(e.target.value))}
+                  <input type="number" min={MAX_VESSELS_MIN} max={MAX_VESSELS_MAX} step={1} value={infMaxVessels}
+                    onChange={(e) => setInfMaxVessels(e.target.value)}
                     className="w-full bg-input border border-border rounded-md px-2 py-1.5 outline-none focus:border-primary" />
                 </div>
                 <div>

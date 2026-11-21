@@ -8,7 +8,6 @@ type Props = {
   mode: "ais" | "gfw";
   ships: AisShip[];
   events: GfwEvent[];
-  selectedKey: string | null;
   onSelectShip: (s: AisShip) => void;
   onSelectEvent: (e: GfwEvent) => void;
   trajectory: TrackPoint[] | null;
@@ -16,9 +15,19 @@ type Props = {
   zoomTarget: { lat: number; lon: number; key: number } | null;
 };
 
+// R-084: divIcon menyisipkan html lewat innerHTML. Nilai yang masuk ke html dibatasi ke bentuk yang aman
+// (warna berupa var(--nama) atau #hex, sudut berupa angka), supaya bila kelak sumber nilainya berubah menjadi
+// data dari jaringan, isinya tidak bisa menyisipkan HTML.
+const SAFE_COLOR_RE = /^(var\(--[a-z0-9-]+\)|#[0-9a-f]{3,8})$/i;
+
+function safeColor(color: string, fallback: string): string {
+  return SAFE_COLOR_RE.test(color) ? color : fallback;
+}
+
 function shipIcon(ship: AisShip): L.DivIcon {
-  const color = speedColor(ship.speed);
-  const angle = ship.heading ?? ship.course ?? 0;
+  const color = safeColor(speedColor(ship.speed), "var(--ais-unknown)");
+  const rawAngle = ship.heading ?? ship.course ?? 0;
+  const angle = Number.isFinite(rawAngle) ? rawAngle : 0;
   const html = `
     <div style="
       width:18px;height:18px;
@@ -39,7 +48,7 @@ function shipIcon(ship: AisShip): L.DivIcon {
 }
 
 function eventIcon(ev: GfwEvent): L.DivIcon {
-  const color = eventColor(ev.type);
+  const color = safeColor(eventColor(ev.type), "var(--gfw-other)");
   const html = `<div style="
     width:12px;height:12px;border-radius:50%;
     background:${color};
@@ -56,9 +65,15 @@ function eventIcon(ev: GfwEvent): L.DivIcon {
 
 function FlyTo({ target }: { target: Props["zoomTarget"] }) {
   const map = useMap();
+  // T-53: lat, lon, dan key diurai lalu ketiganya masuk dependency, sehingga koordinat baru dengan key yang sama
+  // tetap memindahkan peta (dulu hanya target?.key, sehingga koordinat lama dari closure yang dipakai).
+  const lat = target?.lat;
+  const lon = target?.lon;
+  const key = target?.key;
   useEffect(() => {
-    if (target) map.flyTo([target.lat, target.lon], Math.max(map.getZoom(), 11), { duration: 1.2 });
-  }, [target?.key]);
+    if (lat === undefined || lon === undefined || !Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    map.flyTo([lat, lon], Math.max(map.getZoom(), 11), { duration: 1.2 });
+  }, [map, key, lat, lon]);
   return null;
 }
 
@@ -109,13 +124,16 @@ export default function MapView(props: Props) {
         ) : null
       ))}
 
+      {/* T-54: event GFW dengan koordinat bukan angka (NaN/undefined/null) dilewati, sama seperti marker AIS. */}
       {mode === "gfw" && events.map((e) => (
-        <Marker
-          key={e.id}
-          position={[e.lat, e.lon]}
-          icon={eventIcon(e)}
-          eventHandlers={{ click: () => onSelectEvent(e) }}
-        />
+        Number.isFinite(e.lat) && Number.isFinite(e.lon) ? (
+          <Marker
+            key={e.id}
+            position={[e.lat, e.lon]}
+            icon={eventIcon(e)}
+            eventHandlers={{ click: () => onSelectEvent(e) }}
+          />
+        ) : null
       ))}
 
       {/* AIS trail polyline */}
@@ -154,7 +172,7 @@ export default function MapView(props: Props) {
               <Popup>
                 <div style={{ fontSize: 12 }}>
                   {p.timestamp && <div>🕒 {p.timestamp}</div>}
-                  {p.speed != null && <div>⚡ {p.speed.toFixed(1)} kn</div>}
+                  {p.speed !== null && p.speed !== undefined && <div>⚡ {p.speed.toFixed(1)} kn</div>}
                 </div>
               </Popup>
             </CircleMarker>

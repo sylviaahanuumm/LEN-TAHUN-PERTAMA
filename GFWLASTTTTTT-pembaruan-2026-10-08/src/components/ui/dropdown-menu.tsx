@@ -162,11 +162,12 @@ const DropdownMenuSeparator = React.forwardRef<
 ));
 DropdownMenuSeparator.displayName = DropdownMenuPrimitive.Separator.displayName;
 
-const DropdownMenuShortcut = ({ className, ...props }: React.HTMLAttributes<HTMLSpanElement>) => {
-  return (
-    <span className={cn("ml-auto text-xs tracking-widest opacity-60", className)} {...props} />
-  );
-};
+// R-098: forwardRef seperti komponen lain di file ini, sehingga ref tidak dibuang diam-diam.
+const DropdownMenuShortcut = React.forwardRef<HTMLSpanElement, React.HTMLAttributes<HTMLSpanElement>>(
+  ({ className, ...props }, ref) => (
+    <span ref={ref} className={cn("ml-auto text-xs tracking-widest opacity-60", className)} {...props} />
+  ),
+);
 DropdownMenuShortcut.displayName = "DropdownMenuShortcut";
 
 export {

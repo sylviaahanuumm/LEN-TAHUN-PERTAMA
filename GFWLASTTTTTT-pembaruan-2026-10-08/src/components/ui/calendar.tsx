@@ -7,6 +7,19 @@ import { DayButton, DayPicker, getDefaultClassNames } from "react-day-picker";
 import { cn } from "@/lib/utils";
 import { Button, buttonVariants } from "@/components/ui/button";
 
+// R-090: nama kelas bawaan react-day-picker bersifat tetap, jadi cukup diambil sekali saat modul dimuat, bukan
+// di setiap render dan di setiap sel hari (sampai 42 sel per bulan).
+const DEFAULT_CLASS_NAMES = getDefaultClassNames();
+
+// M-139: tanggal untuk atribut data-day ditulis dengan format tetap YYYY-MM-DD (tanggal lokal), tidak bergantung
+// pada locale browser seperti toLocaleDateString().
+function toDayKey(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 function Calendar({
   className,
   classNames,
@@ -19,7 +32,7 @@ function Calendar({
 }: React.ComponentProps<typeof DayPicker> & {
   buttonVariant?: React.ComponentProps<typeof Button>["variant"];
 }) {
-  const defaultClassNames = getDefaultClassNames();
+  const defaultClassNames = DEFAULT_CLASS_NAMES;
 
   return (
     <DayPicker
@@ -142,7 +155,7 @@ function CalendarDayButton({
   modifiers,
   ...props
 }: React.ComponentProps<typeof DayButton>) {
-  const defaultClassNames = getDefaultClassNames();
+  const defaultClassNames = DEFAULT_CLASS_NAMES;
 
   const ref = React.useRef<HTMLButtonElement>(null);
   React.useEffect(() => {
@@ -154,7 +167,7 @@ function CalendarDayButton({
       ref={ref}
       variant="ghost"
       size="icon"
-      data-day={day.date.toLocaleDateString()}
+      data-day={toDayKey(day.date)}
       data-selected-single={
         modifiers.selected &&
         !modifiers.range_start &&

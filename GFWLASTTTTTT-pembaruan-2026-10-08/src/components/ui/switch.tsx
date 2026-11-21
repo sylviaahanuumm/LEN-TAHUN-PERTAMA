@@ -22,6 +22,6 @@ const Switch = React.forwardRef<
     />
   </SwitchPrimitives.Root>
 ));
-Switch.displayName = SwitchPrimitives.Root.displayName;
+Switch.displayName = "Switch"; // R-112: nama tetap di React DevTools (bukan "Root" milik Radix)
 
 export { Switch };

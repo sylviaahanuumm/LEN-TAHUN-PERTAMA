@@ -71,15 +71,25 @@ const Carousel = React.forwardRef<
 
   const handleKeyDown = React.useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (event.key === "ArrowLeft") {
+      // T-57: tombol panah yang ditekan di dalam kontrol isian (input, textarea, select, contenteditable) atau yang
+      // sudah ditangani elemen di dalam slide dibiarkan, supaya kursor teks dan pilihan opsi tetap bekerja.
+      const target = event.target as HTMLElement | null;
+      if (event.defaultPrevented || (target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)))) {
+        return;
+      }
+      // T-56: carousel vertikal memakai ArrowUp/ArrowDown; ArrowLeft/ArrowRight hanya untuk carousel horizontal.
+      const isVertical = orientation === "vertical";
+      const prevKey = isVertical ? "ArrowUp" : "ArrowLeft";
+      const nextKey = isVertical ? "ArrowDown" : "ArrowRight";
+      if (event.key === prevKey) {
         event.preventDefault();
         scrollPrev();
-      } else if (event.key === "ArrowRight") {
+      } else if (event.key === nextKey) {
         event.preventDefault();
         scrollNext();
       }
     },
-    [scrollPrev, scrollNext],
+    [orientation, scrollPrev, scrollNext],
   );
 
   React.useEffect(() => {
@@ -112,7 +122,9 @@ const Carousel = React.forwardRef<
         carouselRef,
         api: api,
         opts,
-        orientation: orientation || (opts?.axis === "y" ? "vertical" : "horizontal"),
+        // R-091: orientation selalu terisi (bawaan "horizontal") dan juga yang menentukan axis di atas, jadi
+        // cadangan dari opts.axis tidak pernah terpakai dan dibuang.
+        orientation,
         scrollPrev,
         scrollNext,
         canScrollPrev,
@@ -121,7 +133,7 @@ const Carousel = React.forwardRef<
     >
       <div
         ref={ref}
-        onKeyDownCapture={handleKeyDown}
+        onKeyDown={handleKeyDown} // T-57: fase bubble, elemen di dalam slide mendapat event lebih dulu
         className={cn("relative", className)}
         role="region"
         aria-roledescription="carousel"

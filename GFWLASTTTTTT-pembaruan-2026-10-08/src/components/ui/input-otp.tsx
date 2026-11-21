@@ -24,7 +24,8 @@ const InputOTPGroup = React.forwardRef<
   React.ElementRef<"div">,
   React.ComponentPropsWithoutRef<"div">
 >(({ className, ...props }, ref) => (
-  <div ref={ref} className={cn("flex items-center", className)} {...props} />
+  // M-142: role="group" mengelompokkan slot digit untuk teknologi bantu.
+  <div ref={ref} role="group" className={cn("flex items-center", className)} {...props} />
 ));
 InputOTPGroup.displayName = "InputOTPGroup";
 
@@ -33,11 +34,19 @@ const InputOTPSlot = React.forwardRef<
   React.ComponentPropsWithoutRef<"div"> & { index: number }
 >(({ index, className, ...props }, ref) => {
   const inputOTPContext = React.useContext(OTPInputContext);
-  const { char, hasFakeCaret, isActive } = inputOTPContext.slots[index];
+  // M-141: index di luar jumlah slot, atau slot di-render di luar <InputOTP>, tidak lagi melempar TypeError.
+  const slot = inputOTPContext?.slots?.[index];
+  if (!slot) return null;
+  const { char, hasFakeCaret, isActive } = slot;
 
   return (
     <div
       ref={ref}
+      // M-142: tiap slot punya peran dan label per posisi digit (hanya-baca; isian sebenarnya ada di input
+      // tersembunyi milik pustaka input-otp).
+      role="textbox"
+      aria-readonly="true"
+      aria-label={`Digit ${index + 1}`}
       className={cn(
         "relative flex h-9 w-9 items-center justify-center border-y border-r border-input text-sm shadow-sm transition-all first:rounded-l-md first:border-l last:rounded-r-md",
         isActive && "z-10 ring-1 ring-ring",
