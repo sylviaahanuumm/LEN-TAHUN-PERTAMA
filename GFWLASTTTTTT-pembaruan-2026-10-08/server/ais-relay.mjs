@@ -28,6 +28,7 @@ const HEARTBEAT_INTERVAL_MS = 20_000;
 const PRUNE_INTERVAL_MS = 60_000;
 const RECONNECT_MIN_MS = 2000;
 const RECONNECT_MAX_MS = 60_000;
+const NO_KEY_RETRY_MS = 30_000; // M-120: jeda memeriksa ulang AISSTREAM_API_KEY yang belum diatur
 
 const ships = new Map();
 const changed = new Set();
@@ -40,6 +41,7 @@ let socket = null;
 let reconnectTimer = null;
 let reconnectDelay = RECONNECT_MIN_MS;
 let timers = [];
+let warnedNoKey = false; // M-120: peringatan "belum diatur" cukup dicatat sekali, bukan tiap 30 detik
 
 function apiKey() {
   return String(process.env.AISSTREAM_API_KEY || "").trim().replace(/^["']|["']$/g, "");
@@ -244,9 +246,17 @@ function connect() {
   const key = apiKey();
   if (!key) {
     setStatus("no-key", "AISSTREAM_API_KEY belum diatur di .env.local");
-    console.warn("[ais-relay] AISSTREAM_API_KEY belum diatur; relay AIS tidak tersambung.");
+    if (!warnedNoKey) {
+      warnedNoKey = true;
+      console.warn(`[ais-relay] AISSTREAM_API_KEY belum diatur; relay AIS belum tersambung, diperiksa lagi tiap ${NO_KEY_RETRY_MS / 1000} detik.`);
+    }
+    // M-120: dijadwalkan pemeriksaan ulang, supaya relay tersambung sendiri begitu key tersedia
+    // (misalnya .env dimuat belakangan), tidak terjebak selamanya di status "no-key".
+    reconnectTimer = setTimeout(connect, NO_KEY_RETRY_MS);
+    reconnectTimer.unref?.();
     return;
   }
+  warnedNoKey = false;
   if (typeof WebSocket !== "function") {
     setStatus("error", "Butuh Node.js 22 atau lebih baru");
     console.error("[ais-relay] WebSocket bawaan tidak tersedia; pakai Node.js 22 atau lebih baru.");
@@ -334,6 +344,14 @@ export function stop() {
     } catch (err) { console.warn("[ais-relay] galat diabaikan:", err?.message || err); }
   }
   clients.clear();
+  // M-121: data kapal, daftar perubahan, dan status ikut dikosongkan, supaya setelah stop() → start()
+  // (Vite HMR atau restart di dalam proses) tidak ada kapal lama yang bocor ke sesi berikutnya.
+  ships.clear();
+  changed.clear();
+  Object.assign(status, { state: "idle", error: null, lastMessageAt: null, messages: 0 });
+  reconnectTimer = null;
+  reconnectDelay = RECONNECT_MIN_MS;
+  warnedNoKey = false;
 }
 
 function sendJson(res, statusCode, data) {
@@ -360,7 +378,8 @@ function openStream(req, res) {
 }
 
 // Mengembalikan true jika permintaan sudah dilayani relay.
-export async function handle(req, res) {
+// R-078: fungsi biasa (bukan async) karena tidak ada yang ditunggu; pemanggil yang memakai `await` tetap berjalan sama.
+export function handle(req, res) {
   const pathname = new URL(req.url || "/", "http://localhost").pathname.replace(/\/+$/, "");
   if (!pathname.startsWith("/api/ais/")) return false;
   if (req.method !== "GET" && req.method !== "HEAD") {

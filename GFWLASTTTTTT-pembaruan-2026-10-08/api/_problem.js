@@ -15,13 +15,18 @@ const TITLES = {
 };
 
 export function sendProblem(res, status, detail, extra = {}) {
+  const title = TITLES[status] || "Error";
+  // M-010: detail kosong/undefined diganti judul status, supaya kolom "detail" dan "error" selalu ada di respons
+  // (JSON.stringify membuang key bernilai undefined, sehingga klien lama yang membaca "error" mendapat kosong).
+  const text = typeof detail === "string" && detail.trim() ? detail : title;
   res.setHeader("Content-Type", "application/problem+json; charset=utf-8");
   return res.status(status).json({
     ...extra,
+    // R-008: "about:blank" dipertahankan (sah menurut RFC 7807 §4.2); klien membedakan galat lewat "status".
     type: "about:blank",
-    title: TITLES[status] || "Error",
+    title,
     status,
-    detail,
-    error: detail,
+    detail: text,
+    error: text,
   });
 }

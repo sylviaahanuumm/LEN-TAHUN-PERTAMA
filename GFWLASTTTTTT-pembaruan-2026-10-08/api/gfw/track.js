@@ -15,6 +15,14 @@ const GFW_EVENT_DATASETS = [
   "public-global-loitering-events:latest",
 ];
 
+// M-031: event cadangan diambil per halaman 200, paling banyak 5 halaman (1000 event), sama dengan
+// fetchEventPages di src/lib/gfw.server.ts (T-63). Bila masih ada sisa, payload diberi truncated: true.
+const EVENTS_PAGE_SIZE = 200;
+const EVENTS_MAX_PAGES = 5;
+// C-2: bentuk ID kapal GFW (huruf heksadesimal dan tanda hubung), sama dengan api/gfw/gear.js. Nilai lain ditolak
+// 400 sebelum diteruskan ke GFW atau dipakai sebagai kunci cache.
+const VESSEL_ID_RE = /^[0-9a-f-]{20,64}$/i;
+
 function toIsoDate(date) {
   return date.includes("T") ? date : `${date}T00:00:00Z`;
 }
@@ -40,7 +48,57 @@ function computeBounds(track) {
 }
 
 function cacheKey(vesselId, startDate, endDate) {
-  return `gfw:track:v2:${encodeURIComponent(vesselId)}:${startDate}:${endDate}`;
+  // v3: event cadangan kini berhalaman (M-031) dan payload punya kolom truncated
+  return `gfw:track:v3:${encodeURIComponent(vesselId)}:${startDate}:${endDate}`;
+}
+
+// R-019: waktu dari GFW berupa angka bisa dalam detik atau milidetik. Satuan ditebak (> 10 miliar = milidetik),
+// lalu hasilnya dicek harus berada di sekitar rentang yang diminta; bila tidak, dicatat peringatan supaya
+// perubahan satuan dari GFW tidak lolos diam-diam.
+function makeTimeConverter(startDate, endDate) {
+  const min = Date.parse(`${startDate}T00:00:00Z`) - 864e5;
+  const max = Date.parse(`${endDate}T00:00:00Z`) + 2 * 864e5;
+  let warned = false;
+  return (value) => {
+    if (value === undefined || value === null || value === "") return undefined;
+    const ms = typeof value === "number" ? (value > 10_000_000_000 ? value : value * 1000) : Date.parse(value);
+    if (!Number.isFinite(ms)) return undefined;
+    if ((ms < min || ms > max) && !warned) {
+      warned = true;
+      console.warn(`[gfw track] waktu ${value} (${new Date(ms).toISOString()}) di luar rentang ${startDate}..${endDate}; periksa satuan waktu GFW`);
+    }
+    return new Date(ms).toISOString();
+  };
+}
+
+async function fetchEventPages(headers, vesselId, startDate, endDate) {
+  const all = [];
+  let offset = 0;
+  for (let page = 0; page < EVENTS_MAX_PAGES; page++) {
+    const evUrl = new URL(`${GFW_BASE}/events`);
+    evUrl.searchParams.set("limit", String(EVENTS_PAGE_SIZE));
+    evUrl.searchParams.set("offset", String(offset));
+    evUrl.searchParams.set("sort", "+start");
+    const evRes = await fetch(evUrl.toString(), {
+      signal: AbortSignal.timeout(15000), // batas waktu 15 detik
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        datasets: GFW_EVENT_DATASETS,
+        startDate: toIsoDate(startDate),
+        endDate: toIsoDate(endDate),
+        vessels: [vesselId],
+      }),
+    });
+    if (!evRes.ok) break;
+    const j = await evRes.json();
+    const entries = j?.entries ?? [];
+    all.push(...entries);
+    const nextOffset = j?.nextOffset;
+    if (entries.length < EVENTS_PAGE_SIZE || nextOffset === null || nextOffset === undefined) return { entries: all, truncated: false };
+    offset = Number(nextOffset) || offset + EVENTS_PAGE_SIZE;
+  }
+  return { entries: all, truncated: all.length >= EVENTS_PAGE_SIZE * EVENTS_MAX_PAGES };
 }
 
 export default async function handler(req, res) {
@@ -50,6 +108,9 @@ export default async function handler(req, res) {
 
   if (!vesselId || !startDate || !endDate) {
     return sendProblem(res, 400, "vessel_id, start_date, end_date required");
+  }
+  if (!VESSEL_ID_RE.test(String(vesselId))) {
+    return sendProblem(res, 400, "vessel_id harus berupa ID kapal GFW (huruf 0-9, a-f, dan tanda hubung; 20-64 karakter).");
   }
   if (!isDay(startDate) || !isDay(endDate) || startDate > endDate) {
     return sendProblem(res, 400, "start_date dan end_date harus berformat YYYY-MM-DD, dan start_date tidak boleh setelah end_date.");
@@ -78,6 +139,8 @@ export default async function handler(req, res) {
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
   let track = [];
   let source = "tracks";
+  let truncated = false;
+  const toTime = makeTimeConverter(startDate, endDate);
 
   try {
     const url = new URL(`${GFW_BASE}/vessels/${encodeURIComponent(vesselId)}/tracks`);
@@ -99,9 +162,7 @@ export default async function handler(req, res) {
         track = coords.map((c, i) => ({
           lon: c[0],
           lat: c[1],
-          timestamp: times[i]
-            ? new Date(typeof times[i] === "number" ? times[i] * (times[i] > 10_000_000_000 ? 1 : 1000) : times[i]).toISOString()
-            : undefined,
+          timestamp: toTime(times[i]),
           speed: speeds[i],
           course: courses[i],
         })).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
@@ -117,34 +178,15 @@ export default async function handler(req, res) {
       }
     } else if (gfwRes.status === 404) {
       source = "events";
-      const evUrl = new URL(`${GFW_BASE}/events`);
-      evUrl.searchParams.set("limit", "200");
-      evUrl.searchParams.set("offset", "0");
-      evUrl.searchParams.set("sort", "+start");
-
-      const evRes = await fetch(evUrl.toString(), {
-        signal: AbortSignal.timeout(15000), // batas waktu 15 detik
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          datasets: GFW_EVENT_DATASETS,
-          startDate: toIsoDate(startDate),
-          endDate: toIsoDate(endDate),
-          vessels: [vesselId],
-        }),
-      });
-
-      if (evRes.ok) {
-        const j = await evRes.json();
-        const entries = j?.entries ?? [];
-        track = entries.map((e) => ({
-          lat: Number(e?.position?.lat),
-          lon: Number(e?.position?.lon),
-          timestamp: e?.start,
-          speed: undefined,
-          course: undefined,
-        })).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
-      }
+      const pages = await fetchEventPages(headers, vesselId, startDate, endDate);
+      truncated = pages.truncated;
+      track = pages.entries.map((e) => ({
+        lat: Number(e?.position?.lat),
+        lon: Number(e?.position?.lon),
+        timestamp: e?.start,
+        speed: undefined,
+        course: undefined,
+      })).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
     } else {
       throw new Error(`GFW track failed: ${gfwRes.status}`);
     }
@@ -155,13 +197,14 @@ export default async function handler(req, res) {
       end_date: endDate,
       source,
       count: track.length,
+      truncated,
       bounds: computeBounds(track),
       track,
     };
     await cacheSet(key, { payload, fetchedAt: Date.now() }, STALE_TTL_SECONDS);
     res.setHeader("x-cache", "MISS");
     res.setHeader("cache-control", "public, max-age=300, stale-while-revalidate=3600");
-    res.json(payload);
+    return res.json(payload); // R-020: return, sama seperti jalur respons lain
   } catch (e) {
     if (cached?.payload) {
       res.setHeader("x-cache", "STALE");
@@ -171,6 +214,6 @@ export default async function handler(req, res) {
         warning: "Serving stale GFW track because live fetch failed",
       });
     }
-    sendProblem(res, 500, e?.message || "track failed");
+    return sendProblem(res, 500, e?.message || "track failed");
   }
 }

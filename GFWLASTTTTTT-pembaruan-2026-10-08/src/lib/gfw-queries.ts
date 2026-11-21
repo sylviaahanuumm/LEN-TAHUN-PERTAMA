@@ -1,5 +1,26 @@
 import type { GfwrQuery } from "./types";
 
+// Katalog ini adalah DOKUMENTASI kueri GFW yang ditampilkan di panel alat (ToolPanel), bukan parameter yang dikirim.
+// M-155: nilai contoh/isian ditulis dalam kurung sudut <...>, supaya tidak tertukar dengan nilai sungguhan
+// (dulu "MMSI / IMO / Name" terlihat seperti kata kunci pencarian asli). isPlaceholderValue() mengenalinya.
+// M-156: bagian {nama} di endpoint adalah templat. Pakai buildEndpoint() untuk mengisinya; fungsi itu menolak
+// bagian yang belum diisi dan meng-encode nilainya, jadi "{vessel_id}" tidak pernah terkirim apa adanya.
+const PLACEHOLDER = /^<.+>$/;
+
+export function isPlaceholderValue(value: string): boolean {
+  return PLACEHOLDER.test(value.trim());
+}
+
+export function buildEndpoint(endpoint: string, values: Record<string, string>): string {
+  return endpoint.replace(/\{([a-z_]+)\}/gi, (_, name: string) => {
+    const value = values[name];
+    if (typeof value !== "string" || !value.trim() || isPlaceholderValue(value)) {
+      throw new Error(`Bagian {${name}} pada endpoint ${endpoint} belum diisi`);
+    }
+    return encodeURIComponent(value.trim());
+  });
+}
+
 export const GFWR_QUERIES: GfwrQuery[] = [
   {
     id: "fishing-events",
@@ -34,7 +55,7 @@ export const GFWR_QUERIES: GfwrQuery[] = [
     category: "Vessels",
     endpoint: "/v3/vessels/search",
     datasets: ["public-global-vessel-identity:latest"],
-    params: { query: "MMSI / IMO / Name" },
+    params: { query: "<MMSI / IMO / Name>" },
     description: "Cari kapal berdasarkan identitas.",
   },
   {
@@ -43,7 +64,7 @@ export const GFWR_QUERIES: GfwrQuery[] = [
     category: "Tracks",
     endpoint: "/v3/vessels/{vessel_id}/tracks",
     datasets: ["public-global-fishing-tracks:latest"],
-    params: { start_date: "YYYY-MM-DD", end_date: "YYYY-MM-DD" },
+    params: { start_date: "<YYYY-MM-DD>", end_date: "<YYYY-MM-DD>" },
     description: "Trajektori posisi kapal pada rentang tanggal.",
   },
   {

@@ -14,12 +14,16 @@ const TITLES: Record<number, string> = {
   503: "Service Unavailable",
 };
 
+// R-119: urutan penggabungan dibuat jelas. "type" dan "title" BOLEH diganti pemanggil (RFC 7807 mengizinkan URI jenis
+// galat sendiri), sedangkan "status", "detail", dan "error" selalu diambil dari argumen, supaya isi balasan tidak bisa
+// berbeda dengan kode status HTTP-nya. Kolom tambahan lain (events, entries, dll.) tetap ikut dikirim.
 export function problemResponse(status: number, detail: string, extra: Record<string, unknown> = {}): Response {
+  const { type, title, ...rest } = extra;
   return Response.json(
     {
-      ...extra,
-      type: "about:blank",
-      title: TITLES[status] ?? "Error",
+      ...rest,
+      type: typeof type === "string" && type ? type : "about:blank",
+      title: typeof title === "string" && title ? title : (TITLES[status] ?? "Error"),
       status,
       detail,
       error: detail,
@@ -28,6 +32,10 @@ export function problemResponse(status: number, detail: string, extra: Record<st
   );
 }
 
+// M-159: galat berupa teks biasa (throw "pesan", umum di beberapa pustaka) tidak lagi dibuang diam-diam; teksnya
+// dipakai sebagai pesan. Selain Error dan teks, pesan cadangan (fallback) yang dipakai.
 export function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback;
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error.trim()) return error.trim();
+  return fallback;
 }

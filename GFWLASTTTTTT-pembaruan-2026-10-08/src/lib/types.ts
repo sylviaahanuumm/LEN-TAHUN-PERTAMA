@@ -12,9 +12,13 @@ export type AisShip = {
   trail: Array<{ lat: number; lon: number; t: number }>;
 };
 
+// M-160: jenis event yang dikenal ditulis terpisah. "| string" biasa membuat ketiga literal itu melebur menjadi string
+// (tidak ada saran otomatis dan pemeriksaan). "(string & {})" tetap menerima jenis lain dari GFW tanpa meleburkannya.
+export type KnownGfwEventType = "FISHING" | "ENCOUNTER" | "LOITERING";
+
 export type GfwEvent = {
   id: string;
-  type: "FISHING" | "ENCOUNTER" | "LOITERING" | string;
+  type: KnownGfwEventType | (string & {});
   start: string;
   end: string;
   durationHours?: number;
@@ -40,7 +44,9 @@ export type TrackResponse = {
   end_date: string;
   source: string;
   count: number;
-  bounds?: [[number, number], [number, number]] | null;
+  // R-120: selalu ada (computeBounds di gfw.server.ts selalu mengisinya); null berarti jejak kosong. Tidak lagi
+  // dicampur dengan "tidak ada kolom" (undefined).
+  bounds: [[number, number], [number, number]] | null;
   track: TrackPoint[];
 };
 
@@ -64,8 +70,10 @@ export type GfwrQuery = {
 };
 
 // C.4 (laporan audit): bentuk hasil server inference ditulis sebagai tipe, bukan any.
+// R-121: label dan keyakinan selalu dikirim berpasangan oleh server inference dan ditampilkan berpasangan di ToolPanel,
+// jadi keduanya wajib (dulu label opsional tetapi keyakinan wajib, tidak konsisten).
 export type InferenceTaskResult = {
-  pred_label?: string;
+  pred_label: string;
   confidence: number;
 };
 

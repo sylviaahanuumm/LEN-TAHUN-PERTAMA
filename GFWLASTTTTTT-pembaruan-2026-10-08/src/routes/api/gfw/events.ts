@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { getIndonesianEvents, type GfwRawEvent } from "@/lib/gfw.server";
 import { errorMessage, problemResponse } from "@/lib/problem";
+import { checkDateRange, GFW_DATA_START } from "@/lib/date-range";
 import type { GfwEvent } from "@/lib/types";
 
 const SERVER_CACHE_TTL = 10 * 60 * 1000;
@@ -9,6 +10,23 @@ const SERVER_CACHE_TTL = 10 * 60 * 1000;
 // supaya memori tidak terus bertambah (kunci paling lama dibuang lebih dulu).
 const SERVER_CACHE_MAX_KEYS = 50;
 const cacheMap = new Map<string, { payload: { events: GfwEvent[] }; time: number }>();
+// R-127: pengambilan GFW yang sedang berjalan per kunci; permintaan MISS bersamaan untuk rentang yang sama menunggu
+// Promise yang sama, bukan memanggil GFW berkali-kali.
+const inflight = new Map<string, Promise<{ events: GfwEvent[] }>>();
+
+async function loadEvents(cacheKey: string, startDate: string, endDate: string): Promise<{ events: GfwEvent[] }> {
+  const raw = await getIndonesianEvents(startDate, endDate);
+  const events: GfwEvent[] = raw.map(toGfwEvent).filter((ev) => Number.isFinite(ev.lat) && Number.isFinite(ev.lon));
+  const payload = { events };
+  cacheMap.delete(cacheKey);
+  cacheMap.set(cacheKey, { payload, time: Date.now() });
+  while (cacheMap.size > SERVER_CACHE_MAX_KEYS) {
+    const oldest = cacheMap.keys().next().value;
+    if (oldest === undefined) break;
+    cacheMap.delete(oldest);
+  }
+  return payload;
+}
 
 function toGfwEvent(e: GfwRawEvent): GfwEvent {
   const startT = e?.start ? new Date(e.start).getTime() : 0;
@@ -34,10 +52,16 @@ export const Route = createFileRoute("/api/gfw/events")({
     handlers: {
       GET: async ({ request }) => {
         const url = new URL(request.url);
-        const startDate = url.searchParams.get("start_date") || "2012-01-01";
-        const endDate = url.searchParams.get("end_date") || new Date().toISOString().slice(0, 10);
+        // R-126: tanggal awal bawaan dari konstanta GFW_DATA_START, bukan angka yang ditulis langsung.
+        // M-162: kedua tanggal diperiksa (YYYY-MM-DD yang ada, awal <= akhir) sebelum ke GFW dan ke kunci cache.
+        const range = checkDateRange(
+          url.searchParams.get("start_date") || GFW_DATA_START,
+          url.searchParams.get("end_date") || new Date().toISOString().slice(0, 10),
+        );
+        if (!range.ok) return problemResponse(400, range.detail, { events: [] });
+        const { start: startDate, end: endDate } = range;
 
-        // Rute ini tidak memakai parameter limit (GFW selalu diminta 200 kejadian), jadi kuncinya rentang tanggal saja.
+        // Rute ini tidak memakai parameter limit, jadi kuncinya rentang tanggal saja.
         const cacheKey = `${startDate}_${endDate}`;
         const cached = cacheMap.get(cacheKey);
         if (cached && Date.now() - cached.time < SERVER_CACHE_TTL) {
@@ -47,17 +71,12 @@ export const Route = createFileRoute("/api/gfw/events")({
         }
 
         try {
-          const raw = await getIndonesianEvents(startDate, endDate);
-          const events: GfwEvent[] = raw.map(toGfwEvent).filter((ev) => Number.isFinite(ev.lat) && Number.isFinite(ev.lon));
-
-          const payload = { events };
-          cacheMap.delete(cacheKey);
-          cacheMap.set(cacheKey, { payload, time: Date.now() });
-          while (cacheMap.size > SERVER_CACHE_MAX_KEYS) {
-            const oldest = cacheMap.keys().next().value;
-            if (oldest === undefined) break;
-            cacheMap.delete(oldest);
+          let pending = inflight.get(cacheKey);
+          if (!pending) {
+            pending = loadEvents(cacheKey, startDate, endDate).finally(() => inflight.delete(cacheKey));
+            inflight.set(cacheKey, pending);
           }
+          const payload = await pending;
 
           return Response.json(payload, {
             headers: { "x-cache": "MISS", "cache-control": "public, max-age=600" },

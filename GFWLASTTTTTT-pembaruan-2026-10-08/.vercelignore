@@ -12,7 +12,9 @@ dist/
 # Folder riset di root project (tanpa "/" di depan, pola ini dulu ikut membuang
 # public/KAPAL YG TERDETEKSI sehingga Kalman Lokal & kandidat anomali 404 di situs online).
 /Dataset_Test_Enriched/
-/KAPAL YG TERDETEKSI/
+# R-005: "*" menggantikan spasi, supaya pola tetap cocok bila spasinya berubah (misalnya menjadi spasi tak-putus,
+# 2 byte, setelah salin-tempel). Tetap dijangkar ke root, jadi public/KAPAL YG TERDETEKSI/ tidak ikut terbuang.
+/KAPAL*YG*TERDETEKSI/
 /RUNYOLO_FINALBISMILLAH/
 /new/
 /Inference/
@@ -33,16 +35,26 @@ dist/
 /public/Dataset_Test_Enriched/Dataset_Test_Enriched_EEZ_Indonesia/trajectory_outputs_25seq_windows_reference_style/images/
 /public/Dataset_Test_Enriched/Dataset_Test_Enriched_EEZ_Indonesia/trajectory_outputs_25seq_windows_reference_style/trajectory_points_raw_vs_kalman.csv
 
+# Model, data mentah, dan database: TIDAK PERNAH ikut deploy, di folder mana pun (termasuk public/).
 *.h5
 # Angka scaler/kalibrator yang disalin dari file H5 (N-1): bagian dari model pihak lain, tidak ikut
 *.preprocessing.json
 *.pt
 *.SAFE
+*.sqlite*
+
+# M-006: citra dan berkas unduhan dibuang di mana pun KECUALI di public/. Dulu polanya berlaku di semua folder,
+# sehingga .tif/.zip/.xlsx yang sengaja ditaruh di public/ untuk halaman web diam-diam tidak ikut deploy (404 tanpa
+# pesan galat). Folder public/ yang sudah dikecualikan di atas (Patch_Uint8, Patch_RGB, dll.) tetap tidak ikut,
+# karena isi folder yang sudah dibuang tidak bisa dimasukkan kembali dengan pola "!".
 *.tif
 *.tiff
 *.zip
 *.xlsx
-*.sqlite*
+!/public/**/*.tif
+!/public/**/*.tiff
+!/public/**/*.zip
+!/public/**/*.xlsx
 
 vite-*.log
 

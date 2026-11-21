@@ -1,5 +1,12 @@
 import type { AisShip } from "./types";
 
+// M-150: alamat layanan tidak lagi ditanam di tengah kode. Nilai bawaan di sini, dan bisa diganti lewat opsi
+// konstruktor (misalnya untuk server tiruan saat pengujian atau proxy sendiri).
+export const AISSTREAM_URL = "wss://stream.aisstream.io/v0/stream";
+// M-152: jeda sambung ulang bertahap: 4 → 8 → 16 → 32 → 60 detik (maksimum), kembali ke 4 detik setelah data masuk.
+const RECONNECT_MIN_MS = 4000;
+const RECONNECT_MAX_MS = 60_000;
+
 const BBOXES: number[][][] = [
   [[-8.0, 105.0], [-4.0, 116.0]],
   [[1.0, 99.0], [6.0, 104.0]],
@@ -42,6 +49,16 @@ export type AisCallbacks = {
   onStatus: (online: boolean) => void;
 };
 
+export type AisClientOptions = {
+  url?: string;
+};
+
+// M-153: salinan data kapal untuk pemanggil, supaya perubahan di luar tidak ikut mengubah data milik klien ini
+// (dan sebaliknya: pembaruan berikutnya tidak diam-diam mengubah objek yang sudah dipegang pemanggil).
+function copyShip(ship: AisShip): AisShip {
+  return { ...ship, trail: ship.trail.map((p) => ({ ...p })) };
+}
+
 export class AisStreamClient {
   private ws: WebSocket | null = null;
   private apiKey: string;
@@ -50,14 +67,18 @@ export class AisStreamClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
+  private url: string;
+  private reconnectDelay = RECONNECT_MIN_MS;
 
-  constructor(apiKey: string, cbs: AisCallbacks) {
+  constructor(apiKey: string, cbs: AisCallbacks, options: AisClientOptions = {}) {
     this.apiKey = apiKey;
     this.cbs = cbs;
+    this.url = options.url || AISSTREAM_URL;
   }
 
   start() {
     this.stopped = false;
+    this.reconnectDelay = RECONNECT_MIN_MS;
     this.connect();
     this.cleanupTimer = setInterval(() => this.cleanup(), 30_000);
   }
@@ -72,7 +93,7 @@ export class AisStreamClient {
   }
 
   getShips() {
-    return Array.from(this.ships.values());
+    return Array.from(this.ships.values(), copyShip);
   }
 
   // T-61: socket lama dilepas handler-nya lalu ditutup, supaya tidak ada dua socket aktif sekaligus
@@ -97,7 +118,7 @@ export class AisStreamClient {
     this.closeSocket();
     let ws: WebSocket;
     try {
-      ws = new WebSocket("wss://stream.aisstream.io/v0/stream");
+      ws = new WebSocket(this.url);
     } catch (err) {
       console.warn("[aisstream] koneksi gagal dibuka, dicoba lagi:", err);
       this.scheduleReconnect();
@@ -116,6 +137,7 @@ export class AisStreamClient {
     };
     ws.onmessage = (ev) => {
       if (this.ws !== ws) return;
+      this.reconnectDelay = RECONNECT_MIN_MS; // M-152: koneksi terbukti mengirim data, jeda kembali ke awal
       this.cbs.onMessage();
       // C.3 (laporan audit): pesan yang gagal dibaca dicatat, tidak lagi ditelan diam-diam.
       try {
@@ -131,17 +153,24 @@ export class AisStreamClient {
       this.cbs.onStatus(false);
       this.scheduleReconnect();
     };
-    ws.onerror = () => {
+    // M-151: galat langsung diperlakukan sebagai koneksi putus: socket dilepas (handler-nya dicopot, jadi event "close"
+    // yang biasanya menyusul tidak memicu apa pun lagi), status offline dikirim sekali, dan sambung ulang dijadwalkan
+    // di sini. Dulu sambung ulang bergantung pada event "close"; bila event itu tidak datang, klien berhenti selamanya.
+    ws.onerror = (ev) => {
       if (this.ws !== ws) return;
+      console.warn("[aisstream] galat koneksi AISStream:", ev);
+      this.closeSocket();
       this.cbs.onStatus(false);
-      ws.close();
+      this.scheduleReconnect();
     };
   }
 
   private scheduleReconnect() {
     if (this.stopped) return;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = setTimeout(() => this.connect(), 4000);
+    const delay = this.reconnectDelay;
+    this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_MS);
+    this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
 
   private handle(msg: AisStreamMessage) {
@@ -184,7 +213,7 @@ export class AisStreamClient {
     if (!existing.name && meta.ShipName) existing.name = String(meta.ShipName).trim();
 
     this.ships.set(mmsi, existing);
-    this.cbs.onShip(existing);
+    this.cbs.onShip(copyShip(existing));
   }
 
   private cleanup() {
@@ -196,7 +225,8 @@ export class AisStreamClient {
 }
 
 function navStatusLabel(code?: number): string | undefined {
-  if (code == null) return undefined;
+  // C-6: pemeriksaan kosong ditulis eksplisit (=== null / === undefined), bukan perbandingan longgar.
+  if (code === null || code === undefined) return undefined;
   const map: Record<number, string> = {
     0: "Under way using engine",
     1: "At anchor",
@@ -213,7 +243,7 @@ function navStatusLabel(code?: number): string | undefined {
 }
 
 export function speedColor(speed?: number): string {
-  if (speed == null || !Number.isFinite(speed)) return "var(--ais-unknown)";
+  if (speed === null || speed === undefined || !Number.isFinite(speed)) return "var(--ais-unknown)";
   if (speed < 1) return "var(--ais-stop)";
   if (speed < 5) return "var(--ais-slow)";
   if (speed < 12) return "var(--ais-normal)";
@@ -221,7 +251,7 @@ export function speedColor(speed?: number): string {
 }
 
 export function speedLabel(speed?: number): string {
-  if (speed == null || !Number.isFinite(speed)) return "Tidak diketahui";
+  if (speed === null || speed === undefined || !Number.isFinite(speed)) return "Tidak diketahui";
   if (speed < 1) return "Berhenti";
   if (speed < 5) return "Lambat";
   if (speed < 12) return "Normal";

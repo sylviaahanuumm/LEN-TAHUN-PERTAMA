@@ -25,9 +25,23 @@ let timers = [];
 let lastError = null;
 let dbFile = null;
 let statsCache = null;
+let fileMB = null;          // R-077: ukuran file database terakhir yang diketahui (MB), dibaca tanpa memblokir
+let fileSizeReading = null; // R-077: pembacaan ukuran yang sedang berjalan, supaya tidak menumpuk
 const pendingPositions = [];
 const pendingVessels = new Map();
 const lastStoredTs = new Map();
+
+// R-077: ukuran file dibaca dengan fs.promises.stat (tidak memblokir event loop relay AIS), lalu disimpan di fileMB.
+// stats() memakai nilai terakhir itu dan memicu pembacaan baru di latar belakang; selisihnya paling lama ±30 detik.
+function refreshFileSize() {
+  if (!dbFile || fileSizeReading) return fileSizeReading;
+  fileSizeReading = fs.promises
+    .stat(dbFile)
+    .then((s) => { fileMB = Math.round((s.size / 1048576) * 10) / 10; })
+    .catch((err) => { console.warn("[ais-history] ukuran file tidak terbaca:", err?.message || err); })
+    .finally(() => { fileSizeReading = null; });
+  return fileSizeReading;
+}
 
 function retentionDays() {
   const n = Number(process.env.AIS_HISTORY_DAYS);
@@ -83,6 +97,7 @@ export async function open() {
     for (const timer of timers) timer.unref?.();
     prune();
     identity.start(db);
+    await refreshFileSize(); // R-077: ukuran awal sudah ada sebelum stats() pertama dipanggil
     lastError = null;
     console.log(`[ais-history] menyimpan riwayat AIS ke ${dbFile} (${retentionDays()} hari)`);
   } catch (err) {
@@ -168,6 +183,7 @@ function prune() {
 export function stats() {
   if (!db) return { enabled: false, error: lastError };
   if (statsCache && Date.now() - statsCache.at < STATS_TTL_MS) return statsCache.value;
+  refreshFileSize(); // R-077: diperbarui di latar belakang, hasilnya dipakai pada ringkasan berikutnya
   try {
     const p = db.prepare("SELECT COUNT(*) AS n, MIN(ts) AS oldest, MAX(ts) AS newest FROM positions").get();
     const vessels = db.prepare("SELECT COUNT(DISTINCT mmsi) AS n FROM positions").get();
@@ -180,7 +196,7 @@ export function stats() {
       oldest: iso(p.oldest),
       newest: iso(p.newest),
       retentionDays: retentionDays(),
-      fileMB: Math.round((fs.statSync(dbFile).size / 1048576) * 10) / 10,
+      fileMB,
       identity: identity.stats(),
     };
     statsCache = { at: Date.now(), value };
@@ -197,4 +213,5 @@ export function close() {
   timers = [];
   try { db?.close(); } catch (err) { console.warn("[ais-history] galat diabaikan:", err?.message || err); }
   db = null;
+  fileMB = null;
 }

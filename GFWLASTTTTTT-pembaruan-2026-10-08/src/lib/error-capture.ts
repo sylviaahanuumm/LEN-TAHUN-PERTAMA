@@ -17,14 +17,26 @@ let unscopedSeq = 0;
 const requestContext = new AsyncLocalStorage<string>();
 const capturedErrors = new Map<string, CapturedError>();
 
+// R-116: entri yang sudah lewat TTL dibuang setiap kali ada galat baru dicatat, supaya objek galat (beserta stack-nya)
+// tidak tertahan di memori sampai terdorong keluar oleh 100 entri lain. Urutan Map = urutan pemakaian, jadi cukup
+// diperiksa dari depan sampai bertemu entri yang masih berlaku.
+function sweepExpired(now: number) {
+  for (const [key, item] of capturedErrors) {
+    if (now - item.at <= TTL_MS) break;
+    capturedErrors.delete(key);
+  }
+}
+
 function record(error: unknown) {
+  const now = Date.now();
+  sweepExpired(now);
   // K-19: listener global ("error", "unhandledrejection") bisa berjalan di luar scope runWithRequestId,
   // sehingga getStore() kosong. Galat seperti itu tetap disimpan (dengan kunci unik) dan diambil lewat
   // consumeCapturedError(requestId, since), lihat di bawah.
   const key = requestContext.getStore() ?? `${UNSCOPED_PREFIX}${++unscopedSeq}`;
   // Hapus lalu isi lagi supaya kunci ini menjadi yang paling baru (urutan Map = urutan pemakaian).
   capturedErrors.delete(key);
-  capturedErrors.set(key, { error, at: Date.now() });
+  capturedErrors.set(key, { error, at: now });
   while (capturedErrors.size > MAX_ENTRIES) {
     const oldest = capturedErrors.keys().next().value;
     if (oldest === undefined) break;
@@ -33,7 +45,12 @@ function record(error: unknown) {
 }
 
 if (typeof globalThis.addEventListener === "function") {
-  globalThis.addEventListener("error", (event) => record((event as ErrorEvent).error ?? event));
+  // M-154: bila event.error kosong (misalnya "Script error" atau yang dilempar bukan objek Error), yang disimpan tetap
+  // sebuah Error berisi pesannya, bukan objek Event mentah yang tidak punya .message/.stack yang berguna.
+  globalThis.addEventListener("error", (event) => {
+    const e = event as ErrorEvent;
+    record(e.error ?? new Error(String(e.message || "unknown error")));
+  });
   globalThis.addEventListener("unhandledrejection", (event) =>
     record((event as PromiseRejectionEvent).reason),
   );
@@ -42,6 +59,11 @@ if (typeof globalThis.addEventListener === "function") {
 // Menjalankan fn dengan ID permintaan tertentu, supaya galat yang tertangkap selama fn berjalan tercatat di ID itu.
 export function runWithRequestId<T>(requestId: string, fn: () => T): T {
   return requestContext.run(requestId, fn);
+}
+
+// Jumlah galat yang sedang disimpan (untuk pemantauan dan uji R-116).
+export function capturedErrorCount(): number {
+  return capturedErrors.size;
 }
 
 // Mengambil galat asli untuk permintaan requestId.

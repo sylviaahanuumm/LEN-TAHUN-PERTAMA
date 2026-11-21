@@ -10,8 +10,10 @@ const GFW_IDENTITY_DATASET = "public-global-vessel-identity:latest";
 const FRESH_TTL_MS = 24 * 60 * 60 * 1000;
 const STALE_TTL_SECONDS = 7 * 24 * 60 * 60;
 
+// M-032: kunci cache memakai query PERSIS seperti yang dikirim ke GFW (tanpa toLowerCase), supaya dua pencarian
+// yang hanya beda huruf besar-kecil tidak berbagi hasil. v2: kunci lama (huruf kecil) tidak dipakai lagi.
 function cacheKey(query, limit) {
-  return `gfw:vessels:search:v1:${encodeURIComponent(query.toLowerCase())}:${limit}`;
+  return `gfw:vessels:search:v2:${encodeURIComponent(query)}:${limit}`;
 }
 
 const MAX_QUERY_LENGTH = 100;
@@ -41,11 +43,14 @@ export default async function handler(req, res) {
 
   const key = cacheKey(query, limit);
   const cached = await cacheGet(key);
-  const fresh = cached?.payload && Date.now() - Number(cached.fetchedAt || 0) < FRESH_TTL_MS;
+  // M-034: fetchedAt diubah ke angka sekali, lalu dipakai untuk cek kesegaran dan header. Dulu string angka dari
+  // Redis (mis. "1700000000000") membuat new Date(...).toISOString() melempar RangeError → 500.
+  const fetchedAtMs = Number(cached?.fetchedAt || 0);
+  const fresh = cached?.payload && Number.isFinite(fetchedAtMs) && Date.now() - fetchedAtMs < FRESH_TTL_MS;
   if (fresh) {
     res.setHeader("x-cache", "HIT");
     res.setHeader("cache-control", "public, max-age=600, stale-while-revalidate=86400");
-    res.setHeader("x-data-fetched-at", new Date(cached.fetchedAt).toISOString());
+    res.setHeader("x-data-fetched-at", new Date(fetchedAtMs).toISOString());
     return res.json(cached.payload);
   }
 

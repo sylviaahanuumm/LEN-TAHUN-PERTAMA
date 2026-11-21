@@ -4,7 +4,10 @@ import { sendTelegramMessage, telegramConfig } from "./_client.js";
 
 export default async function handler(req, res) {
   // M-040 (duplikat T-17): metode diperiksa dulu, baru rate limit.
-  if (!["GET", "POST"].includes(req.method || "GET")) {
+  // R-027: metode yang kosong/hilang TIDAK lagi dianggap GET; langsung ditolak 405 supaya salah konfigurasi
+  // proxy atau framework terlihat, bukan tersembunyi.
+  if (!["GET", "POST"].includes(req.method)) {
+    res.setHeader("Allow", "GET, POST");
     return sendProblem(res, 405, "Method not allowed");
   }
 

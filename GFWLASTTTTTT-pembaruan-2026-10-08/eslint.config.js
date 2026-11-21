@@ -11,7 +11,8 @@ export default tseslint.config(
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],
     languageOptions: {
-      ecmaVersion: 2020,
+      // M-060: sintaks JavaScript terbaru (proyek memakai ??=, top-level await, dll., yang tidak dikenal ES2020).
+      ecmaVersion: "latest",
       globals: globals.browser,
     },
     plugins: {
@@ -33,7 +34,20 @@ export default tseslint.config(
         },
       ],
       "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
-      "@typescript-eslint/no-unused-vars": "off",
+      // M-062: variabel/import yang tidak terpakai dilaporkan sebagai peringatan (bukan dimatikan total). Nama berawalan
+      // "_" sengaja dibiarkan, untuk parameter yang memang wajib ada tetapi tidak dipakai.
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrors: "none" },
+      ],
+    },
+  },
+  {
+    // M-061: kode yang berjalan di server (TanStack Start: *.server.ts, server.ts, start.ts, rute api) memakai variabel
+    // global Node.js (process, Buffer, ...), jadi globals Node ditambahkan untuk file-file itu.
+    files: ["**/*.server.{ts,tsx}", "src/server.ts", "src/start.ts", "src/routes/api/**/*.{ts,tsx}"],
+    languageOptions: {
+      globals: { ...globals.node },
     },
   },
   eslintPluginPrettier,

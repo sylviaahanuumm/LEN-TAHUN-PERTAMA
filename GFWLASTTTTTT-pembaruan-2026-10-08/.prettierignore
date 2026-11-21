@@ -6,3 +6,15 @@ pnpm-lock.yaml
 package-lock.json
 bun.lock
 routeTree.gen.ts
+
+# M-005: disamakan dengan .gitignore untuk folder hasil build/generate dan data lokal.
+.nitro
+.tanstack
+.wrangler
+.vercel
+/.local-dev/
+/newcodinggfw_fixbuanget/
+# File env berisi kunci rahasia: Prettier tidak boleh membaca atau mengubahnya.
+.env*
+# public/ berisi dataset CSV/JSON besar yang dipakai halaman apa adanya; memformat ulang berisiko mengubah data.
+/public/

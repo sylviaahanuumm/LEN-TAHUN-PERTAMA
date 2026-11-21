@@ -4,3 +4,8 @@
 export function gfwToken() {
   return process.env.GFW_API_TOKEN || process.env.GFW_TOKEN || "";
 }
+
+// M-024: alamat dasar API GFW bisa diganti lewat GFW_BASE_URL (misalnya untuk staging); bawaannya API resmi v3.
+export function gfwBase() {
+  return String(process.env.GFW_BASE_URL || "https://gateway.api.globalfishingwatch.org/v3").replace(/\/+$/, "");
+}

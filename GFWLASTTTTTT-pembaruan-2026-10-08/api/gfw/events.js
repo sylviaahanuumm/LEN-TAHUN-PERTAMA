@@ -83,8 +83,35 @@ function cacheEnvelope(payload) {
   };
 }
 
+// Hasil sebagian (ada dataset yang gagal, M-021) tidak dianggap segar, supaya permintaan berikutnya mencoba lagi;
+// hasil itu tetap tersimpan sebagai cadangan.
 function isFresh(entry) {
-  return entry?.payload && Date.now() - Number(entry.fetchedAt || 0) < FRESH_TTL_SECONDS * 1000;
+  return entry?.payload && !entry.partial && Date.now() - Number(entry.fetchedAt || 0) < FRESH_TTL_SECONDS * 1000;
+}
+
+// M-022: permintaan yang sama (kunci cache sama) yang datang bersamaan menunggu satu pengambilan GFW yang sama,
+// bukan masing-masing memanggil GFW 3 kali.
+const inflight = new Map();
+
+async function loadEvents(token, start, end, key) {
+  console.log(`[gfw] fetching ${start} -> ${end} ...`);
+  const t0 = Date.now();
+  // M-021: allSettled, supaya satu dataset yang gagal tidak membuang hasil dataset lain yang berhasil.
+  const results = await Promise.allSettled(GFW_EVENT_DATASETS.map((dataset) => fetchDataset(token, dataset, start, end)));
+  const failed = GFW_EVENT_DATASETS.filter((_, i) => results[i].status === "rejected");
+  if (failed.length === GFW_EVENT_DATASETS.length) throw results[0].reason;
+  const lists = results.filter((r) => r.status === "fulfilled").map((r) => r.value);
+  // Pengaman: apa pun jawaban GFW, yang diteruskan hanya event yang memang tercatat di ZEE Indonesia.
+  const data = lists.flat()
+    .filter((event) => (event?.regions?.eez ?? []).map(String).includes(INDONESIA_EEZ_ID))
+    .sort((x, y) => String(y.start).localeCompare(String(x.start)))
+    .slice(0, MAX_EVENTS);
+  console.log(`[gfw] OK - ${data.length} events (${Date.now() - t0}ms)${failed.length ? `, gagal: ${failed.join(", ")}` : ""}`);
+
+  const payload = { events: data };
+  if (failed.length) payload.warning = `Sebagian data GFW tidak terambil: ${failed.join(", ")}`;
+  await cacheSet(key, { ...cacheEnvelope(payload), partial: failed.length > 0 }, STALE_TTL_SECONDS);
+  return payload;
 }
 
 export default async function handler(req, res) {
@@ -114,25 +141,20 @@ export default async function handler(req, res) {
     return res.json(payload);
   }
 
-  const token = gfwToken();
-  if (!token) return sendProblem(res, 500, "GFW_API_TOKEN not configured", { events: [] });
-
   try {
-    console.log(`[gfw] fetching ${start} -> ${end} ...`);
-    const t0 = Date.now();
+    // M-020: token kosong diperlakukan seperti kegagalan GFW lainnya, supaya data cadangan di cache tetap disajikan.
+    const token = gfwToken();
+    if (!token) throw new Error("GFW_API_TOKEN not configured");
 
-    const lists = await Promise.all(GFW_EVENT_DATASETS.map((dataset) => fetchDataset(token, dataset, start, end)));
-    // Pengaman: apa pun jawaban GFW, yang diteruskan hanya event yang memang tercatat di ZEE Indonesia.
-    const data = lists.flat()
-      .filter((event) => (event?.regions?.eez ?? []).map(String).includes(INDONESIA_EEZ_ID))
-      .sort((x, y) => String(y.start).localeCompare(String(x.start)))
-      .slice(0, MAX_EVENTS);
-    console.log(`[gfw] OK - ${data.length} events (${Date.now() - t0}ms)`);
-
-    const payload = { events: data };
-    await cacheSet(key, cacheEnvelope(payload), STALE_TTL_SECONDS);
+    let job = inflight.get(key);
+    if (!job) {
+      job = loadEvents(token, start, end, key).finally(() => inflight.delete(key));
+      inflight.set(key, job);
+    }
+    const payload = await job;
     res.setHeader("x-cache", "MISS");
-    res.setHeader("cache-control", CDN_CACHE);
+    // Hasil sebagian hanya disimpan CDN sebentar, supaya cepat diganti hasil lengkap.
+    res.setHeader("cache-control", payload.warning ? CDN_CACHE_STALE : CDN_CACHE);
     res.json(payload);
   } catch (e) {
     console.error("[gfw] catch:", e?.message);

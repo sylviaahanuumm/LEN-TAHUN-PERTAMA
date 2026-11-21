@@ -322,6 +322,17 @@ RESULT_COLUMNS = [
 def open_results_db() -> sqlite3.Connection:
     RESULTS_DB.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(RESULTS_DB, timeout=30)
+    # M-124: bila pembuatan tabel/kolom gagal (database terkunci, disk penuh), koneksi ditutup dulu sebelum galatnya
+    # diteruskan, supaya tidak ada file descriptor yang bocor setiap kali main() mencoba lagi.
+    try:
+        _prepare_results_db(con)
+    except Exception:
+        con.close()
+        raise
+    return con
+
+
+def _prepare_results_db(con: sqlite3.Connection) -> None:
     con.executescript("""
         PRAGMA journal_mode = WAL;
         CREATE TABLE IF NOT EXISTS runs (
@@ -361,13 +372,33 @@ def open_results_db() -> sqlite3.Connection:
     for column, kind in [("gear_h5_label", "TEXT"), ("gear_h5_probability", "REAL"), ("gear_h5_used_windows", "INTEGER")]:
         if column not in existing:
             con.execute(f"ALTER TABLE vessel_results ADD COLUMN {column} {kind}")
-    return con
 
 
 def run_once(fusion, models, rasters: DistanceRasters, model_sha: str) -> None:
     started = int(time.time())
     since = started - int(LOOKBACK_DAYS * 86400)
     con = open_results_db()
+    # M-124: koneksi juga ditutup bila INSERT/commit baris "runs" gagal (dulu di luar try/finally sehingga bocor).
+    try:
+        run_id = _start_run(con, started, since, model_sha)
+    except Exception:
+        con.close()
+        raise
+    try:
+        _run_pipelines(con, fusion, models, rasters, run_id, started, since)
+    except Exception as exc:
+        # Galat dicatat di baris runs; bila pencatatan itu sendiri gagal, galat aslinya tetap yang diteruskan.
+        try:
+            con.execute("UPDATE runs SET finished_at = ?, error = ? WHERE run_id = ?", (int(time.time()), str(exc)[:500], run_id))
+            con.commit()
+        except Exception as mark_exc:
+            log(f"run {run_id}: galat tidak bisa dicatat di database hasil: {mark_exc}")
+        raise
+    finally:
+        con.close()
+
+
+def _start_run(con: sqlite3.Connection, started: int, since: int, model_sha: str) -> int:
     run_id = con.execute("INSERT INTO runs (started_at, model_sha256, data_since, settings) VALUES (?, ?, ?, ?)", (
         started, model_sha, since, json.dumps({
             "pipelines": ["gear", "spoofing"],
@@ -379,60 +410,57 @@ def run_once(fusion, models, rasters: DistanceRasters, model_sha: str) -> None:
                                    "spoofing": "rata-rata 10% window teratas per model -> rata-rata 3 model -> Platt -> ambang"},
         }))).lastrowid
     con.commit()
-    try:
-        vessels, positions = read_fishing_tracks(since)
-        names = {int(r.mmsi): r.name for r in vessels.itertuples()}
-        gfw_gear = {int(r.mmsi): r.gfw_geartype for r in vessels.itertuples()}
+    return run_id
 
-        gear, gear_h5, spoof = {}, {}, {}
-        if not positions.empty:
-            positions = rasters.add(positions)
-            frame = to_model_frame(fusion, positions, names)
-            _, gear = fusion.run_gear(models, frame)
-            gear_h5 = gear_h5_aggregation(fusion, models, frame)
-            spoof = spoofing_predictions(fusion, models, frame)
 
-        counts = positions.groupby("mmsi")["ts"].agg(["count", "min", "max"]) if not positions.empty else pd.DataFrame()
-        rows = []
-        for mmsi in vessels["mmsi"].astype(int):
-            key = str(mmsi)
-            g, gh, s = gear.get(key), gear_h5.get(key), spoof.get(key)
-            c = counts.loc[mmsi] if mmsi in counts.index else None
-            raw_gfw = (gfw_gear.get(mmsi) or "").lower() or None
-            rows.append((
-                run_id, mmsi, names.get(mmsi) or None,
-                int(c["count"]) if c is not None else 0,
-                int(c["min"]) if c is not None else None,
-                int(c["max"]) if c is not None else None,
-                "ok" if (g or s) else "data_belum_cukup",
-                g["gear_label"] if g else None,
-                float(g["gear_probability"]) if g else None,
-                json.dumps(g["gear_class_probabilities"]) if g else None,
-                int(g["windows"]) if g else None,
-                gh["gear_label"] if gh else None,
-                gh["gear_probability"] if gh else None,
-                gh["used_windows"] if gh else None,
-                s["spoofing_label"] if s else None,
-                float(s["spoofing_probability"]) if s else None,
-                int(s["windows"]) if s else None,
-                raw_gfw,
-                GFW_GEAR_TO_H5.get(raw_gfw) if raw_gfw else None,
-            ))
-        con.executemany(
-            f"INSERT INTO vessel_results ({', '.join(RESULT_COLUMNS)}) VALUES ({', '.join('?' * len(RESULT_COLUMNS))})", rows)
-        con.execute("UPDATE runs SET finished_at = ?, fishing_vessels = ?, vessels_gear = ?, vessels_spoofing = ? WHERE run_id = ?",
-                    (int(time.time()), len(rows), len(gear), len(spoof), run_id))
-        cutoff = started - KEEP_RUNS_DAYS * 86400
-        con.execute("DELETE FROM vessel_results WHERE run_id IN (SELECT run_id FROM runs WHERE started_at < ?)", (cutoff,))
-        con.execute("DELETE FROM runs WHERE started_at < ?", (cutoff,))
-        con.commit()
-        log(f"run {run_id}: {len(rows)} kapal ikan, {len(positions)} titik; hasil gear {len(gear)}, spoofing {len(spoof)}")
-    except Exception as exc:
-        con.execute("UPDATE runs SET finished_at = ?, error = ? WHERE run_id = ?", (int(time.time()), str(exc)[:500], run_id))
-        con.commit()
-        raise
-    finally:
-        con.close()
+def _run_pipelines(con: sqlite3.Connection, fusion, models, rasters: DistanceRasters, run_id: int, started: int, since: int) -> None:
+    vessels, positions = read_fishing_tracks(since)
+    names = {int(r.mmsi): r.name for r in vessels.itertuples()}
+    gfw_gear = {int(r.mmsi): r.gfw_geartype for r in vessels.itertuples()}
+
+    gear, gear_h5, spoof = {}, {}, {}
+    if not positions.empty:
+        positions = rasters.add(positions)
+        frame = to_model_frame(fusion, positions, names)
+        _, gear = fusion.run_gear(models, frame)
+        gear_h5 = gear_h5_aggregation(fusion, models, frame)
+        spoof = spoofing_predictions(fusion, models, frame)
+
+    counts = positions.groupby("mmsi")["ts"].agg(["count", "min", "max"]) if not positions.empty else pd.DataFrame()
+    rows = []
+    for mmsi in vessels["mmsi"].astype(int):
+        key = str(mmsi)
+        g, gh, s = gear.get(key), gear_h5.get(key), spoof.get(key)
+        c = counts.loc[mmsi] if mmsi in counts.index else None
+        raw_gfw = (gfw_gear.get(mmsi) or "").lower() or None
+        rows.append((
+            run_id, mmsi, names.get(mmsi) or None,
+            int(c["count"]) if c is not None else 0,
+            int(c["min"]) if c is not None else None,
+            int(c["max"]) if c is not None else None,
+            "ok" if (g or s) else "data_belum_cukup",
+            g["gear_label"] if g else None,
+            float(g["gear_probability"]) if g else None,
+            json.dumps(g["gear_class_probabilities"]) if g else None,
+            int(g["windows"]) if g else None,
+            gh["gear_label"] if gh else None,
+            gh["gear_probability"] if gh else None,
+            gh["used_windows"] if gh else None,
+            s["spoofing_label"] if s else None,
+            float(s["spoofing_probability"]) if s else None,
+            int(s["windows"]) if s else None,
+            raw_gfw,
+            GFW_GEAR_TO_H5.get(raw_gfw) if raw_gfw else None,
+        ))
+    con.executemany(
+        f"INSERT INTO vessel_results ({', '.join(RESULT_COLUMNS)}) VALUES ({', '.join('?' * len(RESULT_COLUMNS))})", rows)
+    con.execute("UPDATE runs SET finished_at = ?, fishing_vessels = ?, vessels_gear = ?, vessels_spoofing = ? WHERE run_id = ?",
+                (int(time.time()), len(rows), len(gear), len(spoof), run_id))
+    cutoff = started - KEEP_RUNS_DAYS * 86400
+    con.execute("DELETE FROM vessel_results WHERE run_id IN (SELECT run_id FROM runs WHERE started_at < ?)", (cutoff,))
+    con.execute("DELETE FROM runs WHERE started_at < ?", (cutoff,))
+    con.commit()
+    log(f"run {run_id}: {len(rows)} kapal ikan, {len(positions)} titik; hasil gear {len(gear)}, spoofing {len(spoof)}")
 
 
 def report() -> int:

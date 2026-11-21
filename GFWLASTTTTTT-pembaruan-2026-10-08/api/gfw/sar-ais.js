@@ -78,9 +78,10 @@ async function fetchReport(token, { range, matched, withIdentity = false }, dead
     throw error;
   }
   const json = await res.json();
+  // M-028: baris tanpa tanggal (date) juga dibuang, supaya tidak ada indeks hari yang menunjuk ke null.
   const rows = (json?.entries ?? []).flatMap((entry) => Object.values(entry).flat())
-    .filter((row) => row && Number.isFinite(Number(row.lat)) && Number.isFinite(Number(row.lon)));
-  return { rows, truncated: json?.nextOffset != null };
+    .filter((row) => row && Number.isFinite(Number(row.lat)) && Number.isFinite(Number(row.lon)) && typeof row.date === "string" && row.date !== "");
+  return { rows, truncated: json?.nextOffset !== undefined && json?.nextOffset !== null };
 }
 
 // T-13: nilai 0 tetap 0; angka 1 hanya dipakai bila kolom detections tidak ada atau bukan angka.
@@ -115,8 +116,12 @@ async function buildPayload(token, range) {
   // Identitas kapal disimpan sekali per kapal; tiap titik hanya menunjuk nomor urutnya.
   const vessels = [];
   const vesselIndex = new Map();
+  // M-029: baris tanpa vesselId, MMSI, maupun nama tidak lagi dilebur jadi satu kunci "undefined|undefined";
+  // tiap baris seperti itu dianggap kapal tersendiri yang tidak dikenal.
+  let unknownCount = 0;
   const vesselOf = (row) => {
-    const key = row.vesselId || `${row.mmsi}|${row.shipName}`;
+    const key = row.vesselId
+      || (row.mmsi || row.shipName ? `${row.mmsi || ""}|${row.shipName || ""}` : `tanpa-identitas:${unknownCount++}`);
     if (!vesselIndex.has(key)) {
       vesselIndex.set(key, vessels.length);
       vessels.push([row.shipName || "", row.mmsi || "", row.flag || "", row.vesselType || ""]);
@@ -146,6 +151,8 @@ async function buildPayload(token, range) {
       points: matched.rows.map((row) => [round2(row.lat), round2(row.lon), dayIndex.get(row.date), count(row), identityUnavailable ? null : vesselOf(row)]),
     },
     truncated: unmatched.truncated || matched.truncated,
+    // R-018: bila truncated, "total" hanya menghitung baris yang diterima (bukan jumlah sebenarnya di GFW).
+    totalComplete: !(unmatched.truncated || matched.truncated),
     identityUnavailable,
     ...(identityUnavailable ? { warning: "Identitas kapal yang cocok AIS sementara tidak tersedia dari Global Fishing Watch." } : {}),
   };
@@ -158,7 +165,7 @@ export default async function handler(req, res) {
   const allowed = await applyRateLimit(req, res, { name: "gfw-sar-ais", limit: 30, windowSeconds: 10 * 60 });
   if (!allowed) return;
 
-  const key = `gfw:sar-ais:v2:${range.start}:${range.end}`; // v2: cara hitung deteksi (T-13) berubah
+  const key = `gfw:sar-ais:v3:${range.start}:${range.end}`; // v3: baris tanpa tanggal dibuang (M-028), kunci kapal (M-029)
   const cached = await cacheGet(key);
   if (cached?.payload) {
     res.setHeader("x-cache", "HIT");

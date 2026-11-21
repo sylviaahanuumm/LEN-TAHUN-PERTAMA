@@ -6,16 +6,31 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// M-172: aturan baca .env disamakan dengan loadDotEnv di server/index.mjs: baris kosong dan baris komentar (#)
+// dilewati, dan tanda kutip pengapit ("nilai" atau 'nilai') dibuang. Dulu baris "# KUNCI=..." ikut menjadi variabel
+// bernama "# KUNCI", dan KUNCI="abc" terbaca lengkap dengan tanda kutipnya.
+export function parseDotEnv(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq < 1) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if (/^(["']).*\1$/.test(value)) value = value.slice(1, -1);
+    if (key) out[key] = value;
+  }
+  return out;
+}
+
 function loadDotEnv() {
   for (const fileName of [".env", ".env.local"]) {
     const envFile = path.join(__dirname, fileName);
     if (!fs.existsSync(envFile)) continue;
-    for (const line of fs.readFileSync(envFile, "utf-8").split("\n")) {
-      const eq = line.indexOf("=");
-      if (eq < 1) continue;
-      const key = line.slice(0, eq).trim();
-      const val = line.slice(eq + 1).trim();
-      if (key && !(key in process.env)) process.env[key] = val;
+    // Nilai yang sudah ada di environment tidak ditimpa (sama seperti sebelumnya).
+    for (const [key, value] of Object.entries(parseDotEnv(fs.readFileSync(envFile, "utf-8")))) {
+      if (!(key in process.env)) process.env[key] = value;
     }
   }
 }
@@ -35,8 +50,10 @@ function resolveHandler(urlPath: string): string | null {
     path.resolve(apiDir, clean, "index.js"),
   ];
   const found = candidates.find(fs.existsSync);
-  // Pastikan path hasil resolve tetap berada di dalam folder api
-  if (found && (found.startsWith(apiDir + path.sep) || found === apiDir)) {
+  // Pastikan path hasil resolve tetap berada di dalam folder api.
+  // R-136: perbandingan "found === apiDir" dibuang: kandidat selalu berakhiran ".js" atau "index.js", jadi tidak
+  // mungkin sama dengan folder api itu sendiri (cabang itu tidak pernah tercapai).
+  if (found && found.startsWith(apiDir + path.sep)) {
     return found;
   }
   return null;
@@ -178,7 +195,12 @@ function vercelApiPlugin() {
             res.statusCode = this._status;
             res.end(JSON.stringify(data));
           },
-          end(body = "") { res.statusCode = this._status; res.end(body); },
+          // R-137: bila handler belum mengatur Content-Type, isi teks dikirim sebagai text/plain (dulu tanpa header sama sekali).
+          end(body = "") {
+            res.statusCode = this._status;
+            if (body && !res.getHeader("Content-Type")) res.setHeader("Content-Type", "text/plain; charset=utf-8");
+            res.end(body);
+          },
         };
 
         try {

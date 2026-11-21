@@ -20,7 +20,16 @@ const REVOKED_PREFIX = "onx:session:revoked:";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const keyCache = new Map();
+// R-011: hanya ada satu SESSION_SECRET pada satu waktu, jadi cukup satu pasangan secret→kunci (tidak memakai Map
+// yang bisa tumbuh tanpa batas bila secret berganti-ganti, misalnya saat pengujian).
+let cachedSecret = "";
+let cachedKey = null;
+// M-014: hasil "sesi sudah dicabut" disimpan sebentar di memori supaya permintaan berikutnya dengan cookie yang sama
+// tidak selalu bertanya ke Redis. Hanya hasil positif yang disimpan (sesi aktif tetap dicek ke Redis tiap permintaan).
+const REVOKE_CACHE_TTL_MS = 5_000;
+const REVOKE_CACHE_MAX = 1000;
+const revokeCache = new Map(); // sid -> waktu disimpan (ms)
+let warnedNoRedis = false;
 
 function b64urlEncode(bytes) {
   let binary = "";
@@ -41,10 +50,11 @@ export function sessionSecret() {
 }
 
 async function hmacKey(secret) {
-  if (!keyCache.has(secret)) {
-    keyCache.set(secret, crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]));
+  if (secret !== cachedSecret || !cachedKey) {
+    cachedSecret = secret;
+    cachedKey = crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
   }
-  return keyCache.get(secret);
+  return cachedKey;
 }
 
 async function sign(payload, secret) {
@@ -64,8 +74,8 @@ export async function createSession(sub, now = Date.now()) {
 }
 
 // Mengembalikan isi sesi bila tanda tangan benar dan belum lewat batas mutlak maupun batas diam; selain itu null.
-export async function verifySessionToken(token, now = Date.now()) {
-  const secret = sessionSecret();
+// R-012: secret bisa diteruskan pemanggil supaya verifikasi dan perpanjangan cookie memakai kunci yang sama.
+export async function verifySessionToken(token, now = Date.now(), secret = sessionSecret()) {
   if (!secret || typeof token !== "string") return null;
   const parts = token.split(".");
   if (parts.length !== 3 || parts[0] !== "v1") return null;
@@ -88,11 +98,13 @@ export async function verifySessionToken(token, now = Date.now()) {
   return payload;
 }
 
-async function renewIfNeeded(payload, now) {
+// R-012: memakai secret yang sama dengan yang dipakai verifySessionToken (diteruskan dari decideAccess), bukan
+// membaca ulang SESSION_SECRET, supaya cookie baru tidak ditandatangani kunci lain bila pengaturan berubah di tengah.
+async function renewIfNeeded(payload, now, secret) {
   const t = seconds(now);
   if (t - payload.act < RENEW_AFTER_SECONDS) return null;
   const renewed = { ...payload, act: t };
-  return { token: await sign(renewed, sessionSecret()), payload: renewed };
+  return { token: await sign(renewed, secret), payload: renewed };
 }
 
 export function readCookie(cookieHeader, name) {
@@ -114,15 +126,39 @@ export function clearSessionCookie({ secure } = {}) {
 
 // Logout: ID sesi dicatat sebagai dicabut sampai batas mutlaknya. Pencatatan lintas server membutuhkan Redis
 // (UPSTASH_REDIS_REST_URL/TOKEN); tanpa Redis hanya berlaku di proses yang sama. Cookie di browser tetap dihapus.
+// R-015: mengembalikan true bila pencabutan tersimpan di Redis (berlaku di semua server), false bila hanya di memori.
 export async function revokeSession(payload, now = Date.now()) {
   const { cacheSet } = await import("./_redis.js");
   const ttl = Math.max(1, payload.exp - seconds(now));
-  await cacheSet(`${REVOKED_PREFIX}${payload.sid}`, true, ttl);
+  const shared = await cacheSet(`${REVOKED_PREFIX}${payload.sid}`, true, ttl);
+  rememberRevoked(payload.sid);
+  return shared;
 }
 
+function rememberRevoked(sid) {
+  if (revokeCache.size >= REVOKE_CACHE_MAX) revokeCache.delete(revokeCache.keys().next().value);
+  revokeCache.set(sid, Date.now());
+}
+
+/**
+ * Apakah sesi ini sudah dicabut (logout)?
+ *
+ * M-015 (konsekuensi keamanan): pencabutan dibagikan antar-server lewat Redis. Bila Redis tidak diatur atau sedang
+ * gagal, cacheGet memakai salinan memori proses ini saja, sehingga logout yang tercatat di server/instans LAIN tidak
+ * terlihat di sini dan cookie yang sudah di-logout masih diterima sampai batas diam (30 menit) atau batas mutlaknya.
+ * Kegagalan Redis dicatat oleh cacheGet ("[cache] Redis GET failed"); Redis yang tidak diatur dicatat sekali di bawah.
+ */
 async function isRevoked(sid) {
-  const { cacheGet } = await import("./_redis.js");
-  return Boolean(await cacheGet(`${REVOKED_PREFIX}${sid}`));
+  const at = revokeCache.get(sid);
+  if (at !== undefined && Date.now() - at < REVOKE_CACHE_TTL_MS) return true;
+  const { cacheGet, redisConfigured } = await import("./_redis.js");
+  if (!redisConfigured() && !warnedNoRedis) {
+    warnedNoRedis = true;
+    console.warn("[session] Redis tidak diatur: pencabutan sesi (logout) hanya berlaku di proses server ini.");
+  }
+  const revoked = Boolean(await cacheGet(`${REVOKED_PREFIX}${sid}`));
+  if (revoked) rememberRevoked(sid);
+  return revoked;
 }
 
 // Alamat yang boleh dibuka tanpa login: halaman login, berkas tampilan di /assets/ (CSS, JavaScript, gambar; tidak
@@ -154,9 +190,10 @@ export function isPageRequest(pathname) {
 export async function decideAccess({ method = "GET", url, cookieHeader, secure = false, now = Date.now() }) {
   const { pathname, search } = new URL(url, "http://localhost");
   if (method === "OPTIONS" || isPublicPath(pathname)) return { action: "allow" };
-  const payload = await verifySessionToken(readCookie(cookieHeader, SESSION_COOKIE), now);
+  const secret = sessionSecret(); // R-012: dibaca sekali untuk verifikasi dan perpanjangan
+  const payload = await verifySessionToken(readCookie(cookieHeader, SESSION_COOKIE), now, secret);
   if (payload && !(await isRevoked(payload.sid))) {
-    const renewed = await renewIfNeeded(payload, now);
+    const renewed = await renewIfNeeded(payload, now, secret);
     return { action: "allow", setCookie: renewed ? sessionCookie(renewed.token, renewed.payload, { secure, now }) : undefined };
   }
   if (isPageRequest(pathname)) return { action: "redirect", location: `/index.html?next=${encodeURIComponent(pathname + search)}` };

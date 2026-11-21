@@ -63,7 +63,11 @@ SPOOF_GENERATE_ARGS = [
 
 
 def load_worker():
-    spec = importlib.util.spec_from_file_location("h5worker", ROOT / "server" / "h5-worker.py")
+    path = ROOT / "server" / "h5-worker.py"
+    spec = importlib.util.spec_from_file_location("h5worker", path)
+    # M-122: file worker hilang/tidak terbaca -> pesan jelas berisi path-nya, bukan "TypeError: argument should be a spec".
+    if spec is None or spec.loader is None or not path.is_file():
+        raise SystemExit(f"h5-worker.py tidak ditemukan atau tidak bisa dimuat: {path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -156,7 +160,17 @@ def check_spoofing(worker, fusion, models) -> bool:
         "claimed_mmsi": raw["claimed_mmsi"].map(fusion.norm_mmsi),
         "claimed_identity_registered": pd.to_numeric(raw["claimed_identity_registered"], errors="coerce"),
     })
-    results = {scenario_of[mmsi]: item for mmsi, item in worker.spoofing_predictions(fusion, models, frame).items()}
+    # M-123: MMSI hasil worker yang tidak ada di data uji dilaporkan dengan jelas (bukan KeyError polos), lalu uji GAGAL.
+    results, unknown = {}, []
+    for mmsi, item in worker.spoofing_predictions(fusion, models, frame).items():
+        scenario = scenario_of.get(mmsi)
+        if scenario is None:
+            unknown.append(str(mmsi))
+            continue
+        results[scenario] = item
+    if unknown:
+        print(f"SPOOFING: {len(unknown)} MMSI hasil worker tidak ada di data uji (contoh: {', '.join(unknown[:5])}); "
+              "periksa normalisasi MMSI (fusion.norm_mmsi) di worker dan di data uji")
     reference = pd.read_csv(SPOOF_REFERENCE)
 
     matched = 0
@@ -188,7 +202,7 @@ def check_spoofing(worker, fusion, models) -> bool:
     print(f"hitungan: normal benar {counts['tn']}, salah tanda {counts['fp']}, spoofing lolos {counts['fn']}, spoofing tertangkap {counts['tp']}"
           f"  (catatan pembuat model: 248, 22, 87, 165)")
     print("benar per jenis:", ", ".join(f"{k} {v[0]}/{v[1]}" for k, v in sorted(by_attack.items())))
-    return matched == len(reference) and len(results) == len(reference)
+    return matched == len(reference) and len(results) == len(reference) and not unknown
 
 
 def main() -> int:

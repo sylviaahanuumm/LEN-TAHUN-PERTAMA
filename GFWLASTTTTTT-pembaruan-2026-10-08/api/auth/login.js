@@ -1,6 +1,7 @@
 import { sendProblem } from "../_problem.js";
 import crypto from "node:crypto";
-import { applyRateLimit } from "../_rate-limit.js";
+import { applyRateLimit, clientIpKey } from "../_rate-limit.js";
+import { incrementWithTtl } from "../_redis.js";
 import { createSession, sessionCookie, sessionSecret } from "../_session.js";
 
 // Login Ocean Nexus diperiksa di server. Nama pengguna dan kata sandi dibaca dari pengaturan server
@@ -9,8 +10,29 @@ import { createSession, sessionCookie, sessionSecret } from "../_session.js";
 // F3-S (laporan audit B.4 dan Fase 3): login yang benar mendapat cookie sesi HttpOnly (api/_session.js); halaman,
 // data, dan API lain hanya dikirim server bila cookie itu sah (middleware.js di Vercel).
 
+// M-016: header x-forwarded-proto bisa diisi siapa saja, jadi hanya dipercaya bila server memang di belakang proxy
+// tepercaya (TRUST_PROXY=1). Di Vercel cookie selalu Secure; di server sendiri bisa dipaksa dengan COOKIE_SECURE=1.
+// Aturan ini sama dengan server/index.mjs (T-50).
 function isSecure(req) {
-  return String(req.headers?.["x-forwarded-proto"] || "").split(",")[0].trim() === "https" || Boolean(process.env.VERCEL);
+  if (process.env.VERCEL || process.env.COOKIE_SECURE === "1") return true;
+  if (process.env.TRUST_PROXY !== "1") return false;
+  return String(req.headers?.["x-forwarded-proto"] || "").split(",")[0].trim() === "https";
+}
+
+// M-017: jeda bertahap untuk login gagal beruntun dari IP yang sama: 1, 2, 4, lalu paling lama 8 detik, dihitung
+// dalam jendela 10 menit (sama dengan batas login). Bersama batas 10 percobaan / 10 menit, tebakan kata sandi jadi lambat.
+const FAIL_WINDOW_SECONDS = 10 * 60;
+const MAX_FAIL_DELAY_MS = 8000;
+
+async function delayAfterFailure(req) {
+  let failures = 1;
+  try {
+    failures = await incrementWithTtl(`login-fail:${clientIpKey(req)}`, FAIL_WINDOW_SECONDS);
+  } catch (err) {
+    console.warn("[login] penghitung gagal login tidak tersedia:", err?.message || err);
+  }
+  const ms = Math.min(1000 * 2 ** Math.max(0, failures - 1), MAX_FAIL_DELAY_MS);
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function readBody(req) {
@@ -52,6 +74,7 @@ export default async function handler(req, res) {
   const userOk = sameText(String(username ?? "").trim(), expectedUser);
   const passwordOk = sameText(password, expectedPassword);
   if (!(userOk && passwordOk)) {
+    await delayAfterFailure(req);
     return sendProblem(res, 401, "Nama pengguna atau kata sandi salah.", { ok: false });
   }
   try {

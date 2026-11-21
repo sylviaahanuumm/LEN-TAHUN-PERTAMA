@@ -1,4 +1,12 @@
-export function renderErrorPage(): string {
+// R-117: alamat "kembali ke beranda" disimpan di satu konstanta. Kalau aplikasi suatu saat disajikan dari sub-path
+// (misalnya /app/ di belakang reverse proxy), cukup ubah di sini atau kirim nilainya lewat parameter.
+export const HOME_PATH = "/";
+
+function escapeAttr(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+export function renderErrorPage(homePath: string = HOME_PATH): string {
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -22,7 +30,7 @@ export function renderErrorPage(): string {
       <p>Something went wrong on our end. You can try refreshing or head back home.</p>
       <div class="actions">
         <button class="primary" onclick="location.reload()">Try again</button>
-        <a class="secondary" href="/">Go home</a>
+        <a class="secondary" href="${escapeAttr(homePath)}">Go home</a>
       </div>
     </div>
   </body>

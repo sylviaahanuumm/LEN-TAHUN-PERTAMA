@@ -55,8 +55,11 @@ async function fromAws(runMs, fh, deadline) {
   const offset = (i) => Number(lines[i]?.split(":")[1]);
   const start = offset(Math.min(u, v));
   const end = offset(Math.max(u, v) + 1); // awal pesan berikutnya
-  if (!Number.isFinite(start) || !Number.isFinite(end)) throw new Error("AWS idx: posisi tidak terbaca");
-  const r = await fetch(base, { headers: { Range: `bytes=${start}-${end - 1}` }, signal: fetchSignal(deadline) });
+  if (!Number.isFinite(start)) throw new Error("AWS idx: posisi awal tidak terbaca");
+  // M-041: bila U/V adalah pesan TERAKHIR di file, tidak ada "pesan berikutnya"; ambil dari start sampai akhir file
+  // (Range "bytes=start-"), bukan menganggap indeksnya rusak.
+  const range = Number.isFinite(end) ? `bytes=${start}-${end - 1}` : `bytes=${start}-`;
+  const r = await fetch(base, { headers: { Range: range }, signal: fetchSignal(deadline) });
   if (!r.ok) throw new Error(`AWS ${r.status}`);
   return new Uint8Array(await r.arrayBuffer());
 }
@@ -66,8 +69,20 @@ function toPayload(bytes, runMs, fh) {
   const U = msgs.find((m) => m.category === 2 && m.number === 2);
   const V = msgs.find((m) => m.category === 2 && m.number === 3);
   if (!U || !V) throw new Error("GFS: komponen angin U/V tidak lengkap");
+  // M-042: jam prakiraan di isi pesan harus sama dengan yang diminta, supaya waktu yang ditampilkan tidak salah.
+  // forecastHours bernilai null bila satuan waktunya bukan jam; itu tidak bisa dicek, jadi hanya dicatat.
+  for (const m of [U, V]) {
+    if (m.forecastHours === null || m.forecastHours === undefined) {
+      console.warn(`[wind] jam prakiraan pesan GRIB tidak dalam satuan jam; tidak bisa dicek terhadap f${pad(fh, 3)}`);
+    } else if (m.forecastHours !== fh) {
+      throw new Error(`GFS: jam prakiraan ${m.forecastHours} tidak sama dengan yang diminta (${fh})`);
+    }
+  }
   // leaflet-velocity menganggap baris pertama paling utara dan bujur bertambah ke timur (scan mode 0).
-  if (U.scanMode !== 0 || U.la1 < U.la2 || U.nx !== V.nx || U.ny !== V.ny) throw new Error("GFS: susunan grid tidak sesuai");
+  // R-028: nilai sebenarnya ikut di pesan galat, supaya perubahan susunan grid dari NOAA cepat terdiagnosis.
+  if (U.scanMode !== 0 || U.la1 < U.la2 || U.nx !== V.nx || U.ny !== V.ny) {
+    throw new Error(`GFS: susunan grid tidak sesuai (scanMode ${U.scanMode}, la1 ${U.la1}, la2 ${U.la2}, U ${U.nx}×${U.ny}, V ${V.nx}×${V.ny})`);
+  }
   const round = (a) => Array.from(a, (x) => Math.round(x * 10) / 10);
   return {
     source: "NOAA GFS",
@@ -98,6 +113,9 @@ async function fetchWind() {
   throw lastError || new Error("GFS tidak tersedia");
 }
 
+// M-043: permintaan bersamaan saat cache kosong/usang menunggu satu pengambilan GFS yang sama.
+let inflight = null;
+
 export default async function handler(req, res) {
   const allowed = await applyRateLimit(req, res, { name: "wind", limit: 60, windowSeconds: 10 * 60 });
   if (!allowed) return;
@@ -110,8 +128,12 @@ export default async function handler(req, res) {
   }
 
   try {
-    const payload = await fetchWind();
-    await cacheSet(CACHE_KEY, payload, CACHE_TTL_SECONDS);
+    if (!inflight) {
+      inflight = fetchWind()
+        .then(async (payload) => { await cacheSet(CACHE_KEY, payload, CACHE_TTL_SECONDS); return payload; })
+        .finally(() => { inflight = null; });
+    }
+    const payload = await inflight;
     res.setHeader("x-cache", "MISS");
     res.setHeader("cache-control", CDN_CACHE);
     res.json(payload);

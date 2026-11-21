@@ -17,13 +17,15 @@ dist-ssr
 *.local
 
 # Environment variables
-.env
-.env.*
+# M-001: satu aturan untuk semua file env (.env, .env.local, .env.production, ...). Dulu aturannya tersebar di tiga
+# tempat (.env, .env.*, .env*) sehingga mudah tertinggal saat diubah. Hanya contoh isinya (.env.example) yang ikut.
+.env*
 !.env.example
 
-# Wrangler / Cloudflare
+# Wrangler / Cloudflare / Vercel
 .wrangler/
 .dev.vars
+.vercel
 
 # Editor directories and files
 .vscode/*
@@ -37,17 +39,19 @@ dist-ssr
 *.sw?
 
 # Local generated data, models, and satellite artifacts
-.local-dev/
-Dataset_Test_Enriched/
-Inference/
-KAPAL YG TERDETEKSI/
-RUNYOLO_FINALBISMILLAH/
-new/metadata/
-new/Patch/
-new/Patch_Cal/
-new/Patch_RGB/
-new/Patch_Uint8/
-new/XML/
+# R-004: folder riset diawali "/" supaya hanya berlaku di root proyek (folder ini), tidak ikut membuang folder
+# bernama sama di tempat lain. Isi public/ yang dipakai website dimasukkan di bagian "public data bundle" di bawah.
+/.local-dev/
+/Dataset_Test_Enriched/
+/Inference/
+/KAPAL YG TERDETEKSI/
+/RUNYOLO_FINALBISMILLAH/
+/new/metadata/
+/new/Patch/
+/new/Patch_Cal/
+/new/Patch_RGB/
+/new/Patch_Uint8/
+/new/XML/
 
 # Large binary/model artifacts
 *.h5
@@ -58,15 +62,24 @@ new/XML/
 *.SAFE
 *.tif
 *.tiff
+*.xlsx
+
+# Gambar
+# M-002: semua aturan gambar dikumpulkan di sini. Gambar dibuang secara umum (hasil olahan, citra satelit, patch),
+# lalu gambar yang DIPAKAI halaman web dimasukkan kembali di bawahnya. Bila menambah gambar baru untuk halaman,
+# tambahkan pengecualiannya DI BAGIAN INI, lalu periksa dengan:  git check-ignore -v <path-gambar>
+# (tidak boleh ada keluaran; kalau ada, gambar itu tidak akan ikut ter-commit).
+# Gambar di folder "public data bundle" di bawah (public/new/, public/hasilyolov12n/, ...) juga ikut.
 *.png
+*.jpg
+*.jpeg
+*.webp
 !public/ITS.png
 !public/OceanNexus.png
 !public/trajectory_examples/
 !public/trajectory_examples/*.png
-*.jpg
-*.jpeg
-*.webp
-*.xlsx
+!assets/logos/
+!assets/logos/*.png
 
 # Python caches
 __pycache__/
@@ -89,19 +102,6 @@ Lampiran_Listing_Program_Siap_Tempel_Word.docx
 !public/new/
 !public/new/**
 
-.vercel/
-
-.vercel
-.env*
-
-# ── Dirapikan untuk upload ke GitHub ─────────────────────────────────────────
-# Contoh isi .env tetap ikut (baris ".env*" di atas ikut mengecualikannya); kunci asli tetap TIDAK ikut.
-!.env.example
-
-# Logo mitra dan logo Ocean Nexus dipakai semua halaman (aturan "*.png" di atas ikut membuangnya).
-!assets/logos/
-!assets/logos/*.png
-
 # Kode + dataset penelitian dari pembuat model H5 (2 GB, karya pihak lain): tidak ikut.
 newcodinggfw_fixbuanget/
 
@@ -111,3 +111,6 @@ Lampiran_Listing_Program*
 
 # Dokumen penjelasan revisi audit (bersifat rahasia): jangan ikut ke GitHub publik maupun website.
 Penjelasan*.html
+# M-003: pola kedua, sama dengan .vercelignore (T-01): setiap huruf ditulis dua bentuk, supaya Penjelasan /
+# PENJELASAN / penjelasan_revisi / Penjelasan-2026 dengan ekstensi apa pun, di folder mana pun, tetap tidak ikut.
+**/[Pp][Ee][Nn][Jj][Ee][Ll][Aa][Ss][Aa][Nn]*

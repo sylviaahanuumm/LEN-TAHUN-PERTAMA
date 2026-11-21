@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import io
 import json
-import math
 import warnings
 from pathlib import Path
 
@@ -400,13 +399,30 @@ def calibrate_probs(probs: np.ndarray, calibrator) -> np.ndarray:
         return probs
     eps = 1e-6
     logit_p = np.log(np.clip(probs, eps, 1 - eps) / np.clip(1 - probs, eps, 1 - eps)).reshape(-1, 1)
+    # M-115: kalibrator Platt dilatih dengan log-odds. Bila cara itu gagal, jalur cadangan (probabilitas mentah, lalu
+    # tanpa kalibrasi) tetap dipakai seperti dulu, tetapi kini SELALU disertai peringatan beserta galat aslinya, supaya
+    # hasil yang domain masukannya hanya ditebak tidak terlihat seperti hasil kalibrasi yang benar.
+    # RuntimeWarning dipakai (bukan UserWarning) karena main() membungkam UserWarning.
     try:
         return estimator.predict_proba(logit_p)[:, 1]
-    except Exception:
+    except Exception as logit_err:
         try:
-            return estimator.predict_proba(probs.reshape(-1, 1))[:, 1]
-        except Exception:
+            calibrated = estimator.predict_proba(probs.reshape(-1, 1))[:, 1]
+        except Exception as prob_err:
+            warnings.warn(
+                f"Kalibrator GoDark gagal dipakai ({type(logit_err).__name__}: {logit_err}; "
+                f"cadangan {type(prob_err).__name__}: {prob_err}). Probabilitas TANPA kalibrasi yang dikeluarkan.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
             return probs
+        warnings.warn(
+            f"Kalibrator GoDark menolak masukan log-odds ({type(logit_err).__name__}: {logit_err}). "
+            "Dipakai cadangan: probabilitas mentah sebagai masukan kalibrator; domain masukan ini hanya DITEBAK.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return calibrated
 
 
 def run_inference(features: pd.DataFrame, models: list[dict], calibrator, seq_len: int, min_points: int) -> pd.DataFrame:

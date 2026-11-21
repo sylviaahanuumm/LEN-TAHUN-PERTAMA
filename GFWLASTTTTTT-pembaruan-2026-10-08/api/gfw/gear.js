@@ -11,6 +11,7 @@ const GFW_BASE = "https://gateway.api.globalfishingwatch.org/v3";
 const GFW_IDENTITY_DATASET = "public-global-vessel-identity:latest";
 const MAX_IDS = 1000;
 const GFW_BATCH = 100;
+const GFW_CONCURRENCY = 4;                // M-023: paling banyak 4 batch berjalan bersamaan
 const CACHE_TTL_SECONDS = 7 * 24 * 60 * 60;
 const EMPTY_TTL_SECONDS = 15 * 60;        // T-11: hasil kosong (null) hanya disimpan 15 menit, lalu dicoba lagi
 const VESSEL_ID_RE = /^[0-9a-f-]{20,64}$/i;
@@ -62,6 +63,31 @@ async function fetchGearBatch(ids, token) {
   return found;
 }
 
+// M-023: batch dijalankan bersamaan (paling banyak GFW_CONCURRENCY sekaligus), bukan satu per satu, sehingga
+// 1000 ID (10 batch) selesai dalam ±3 putaran, bukan 10. Batch yang gagal tidak menghentikan batch lain.
+async function fetchAllBatches(missing, token, gear) {
+  const batches = [];
+  for (let i = 0; i < missing.length; i += GFW_BATCH) batches.push(missing.slice(i, i + GFW_BATCH));
+  const errors = [];
+  let next = 0;
+  async function worker() {
+    while (next < batches.length) {
+      const batch = batches[next++];
+      try {
+        const found = await fetchGearBatch(batch, token);
+        await Promise.all(batch.map((id) => {
+          gear[id] = found[id] ?? null;
+          return cacheSet(cacheKey(id), { gear: gear[id] }, gear[id] ? CACHE_TTL_SECONDS : EMPTY_TTL_SECONDS);
+        }));
+      } catch (e) {
+        errors.push(e);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(GFW_CONCURRENCY, batches.length) }, worker));
+  return errors;
+}
+
 export default async function handler(req, res) {
   const ids = readIds(req);
   if (!ids.length) return res.json({ gear: {} });
@@ -85,18 +111,10 @@ export default async function handler(req, res) {
     const token = gfwToken();
     if (!token) return sendProblem(res, 500, "GFW_API_TOKEN not configured", { gear });
 
-    try {
-      for (let i = 0; i < missing.length; i += GFW_BATCH) {
-        const batch = missing.slice(i, i + GFW_BATCH);
-        const found = await fetchGearBatch(batch, token);
-        await Promise.all(batch.map((id) => {
-          gear[id] = found[id] ?? null;
-          return cacheSet(cacheKey(id), { gear: gear[id] }, gear[id] ? CACHE_TTL_SECONDS : EMPTY_TTL_SECONDS);
-        }));
-      }
-    } catch (e) {
-      console.error("[gfw gear]", e); // R-016: error lengkap (dengan stack) hanya di log server
-      return res.json({ gear, warning: e?.message || "gear lookup failed" });
+    const errors = await fetchAllBatches(missing, token, gear);
+    if (errors.length) {
+      console.error("[gfw gear]", errors[0]); // R-016: error lengkap (dengan stack) hanya di log server
+      return res.json({ gear, warning: errors[0]?.message || "gear lookup failed" });
     }
   }
 
