@@ -179,30 +179,38 @@
         }).addTo(map);
 
         if (interactive) {
-          marker.bindPopup(`<b>${row.candidate_type || "candidate"}</b><br>MMSI: ${row.MMSI || "-"}<br>${row.Name || ""}`);
+          const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+          marker.bindPopup(`<b>${esc(row.candidate_type || "candidate")}</b><br>MMSI: ${esc(row.MMSI || "-")}<br>${esc(row.Name)}`);
         }
 
         points.push([lat, lon]);
       });
 
-      if (!points.length) {
+        if (!points.length) {
+          console.warn("[map-background-preview] Tidak ada titik valid di data kandidat, memakai titik fallback.");
+          plotFallbackPoints();
+          return;
+        }
+        
+      if (points.length === 1) {
+        map.setView(points[0], 5);
+      } else {
+        try {
+          map.fitBounds(L.latLngBounds(points), {
+            padding: [26, 26],
+            maxZoom: 5,
+          });
+        } catch (err) {
+          console.warn("[map-background-preview] fitBounds gagal, memakai tampilan default:", err);
+          map.setView([-2.5, 117.0], 5);
+          }
+        }
+      }
+
+      loadCandidates().catch((err) => {
+        console.warn("[map-background-preview] Gagal memuat data kandidat, memakai titik fallback:", err);
         plotFallbackPoints();
-        return;
-      }
-
-      try {
-        map.fitBounds(L.latLngBounds(points), {
-          padding: [26, 26],
-          maxZoom: 5,
-        });
-      } catch {
-        map.setView([-2.5, 117.0], 5);
-      }
-    }
-
-    loadCandidates().catch(() => {
-      plotFallbackPoints();
-    });
+      });    
   </script>
 </body>
 </html>

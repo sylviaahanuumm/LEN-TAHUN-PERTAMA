@@ -73,12 +73,28 @@ def haversine_km(lat1, lon1, lat2, lon2) -> pd.Series:
     lon2 = to_num(lon2)
 
     r = 6371.0088
-    p1 = lat1.map(math.radians)
-    p2 = lat2.map(math.radians)
-    dlat = (lat2 - lat1).map(math.radians)
-    dlon = (lon2 - lon1).map(math.radians)
-    a = (dlat / 2).map(math.sin) ** 2 + p1.map(math.cos) * p2.map(math.cos) * (dlon / 2).map(math.sin) ** 2
-    return 2 * r * a.map(lambda x: math.atan2(math.sqrt(x), math.sqrt(1 - x)) if pd.notna(x) else math.nan)
+    p1 = np.radians(lat1)
+    p2 = np.radians(lat2)
+    dlat = np.radians(lat2 - lat1)
+    dlon = np.radians(lon2 - lon1)
+    a = np.sin(dlat / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dlon / 2) ** 2
+    a = a.clip(0.0, 1.0)
+    return 2 * r * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+
+
+def haversine_km_scalar(lat1, lon1, lat2, lon2) -> float:
+    try:
+        lat1, lon1, lat2, lon2 = (float(v) for v in (lat1, lon1, lat2, lon2))
+    except (TypeError, ValueError):
+        return math.nan
+    if any(math.isnan(v) for v in (lat1, lon1, lat2, lon2)):
+        return math.nan
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlon / 2) ** 2
+    a = min(1.0, max(0.0, a))
+    return 2 * 6371.0088 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 def scene_time(scene: object) -> str:
@@ -258,18 +274,16 @@ def find_transshipment(df: pd.DataFrame, source_file: Path, max_distance_km: flo
         chord = 2.0 * math.sin(min(math.pi, max_distance_km / 6371.0088) / 2.0) * (1.0 + 1e-9) + 1e-12
         for pos, (idx, row) in enumerate(records):
             best = None
-            lat1 = pd.to_numeric(pd.Series([row["Center_latitude"]]), errors="coerce")
-            lon1 = pd.to_numeric(pd.Series([row["Center_longitude"]]), errors="coerce")
             nearby = sorted(int(valid_pos[k]) for k in tree.query_ball_point(xyz[pos], chord)) if tree is not None and valid[pos] else []
             for jdx, other in (records[j] for j in nearby):
                 if idx == jdx or str(row["MMSI"]) == str(other["MMSI"]):
                     continue
-                dist = haversine_km(
-                    lat1,
-                    lon1,
-                    pd.Series([other["Center_latitude"]]),
-                    pd.Series([other["Center_longitude"]]),
-                ).iloc[0]
+                dist = haversine_km_scalar(
+                    row["Center_latitude"],
+                    row["Center_longitude"],
+                    other["Center_latitude"],
+                    other["Center_longitude"],
+                )
                 if pd.isna(dist):
                     continue
                 if best is None or dist < best["dist"]:

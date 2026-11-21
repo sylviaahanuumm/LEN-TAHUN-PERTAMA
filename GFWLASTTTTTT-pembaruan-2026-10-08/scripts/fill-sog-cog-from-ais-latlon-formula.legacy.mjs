@@ -13,8 +13,16 @@ const parsed = parsePath(inputPath);
 const outputPath = join(parsed.dir, `${parsed.base}_ais_latlon_formula_filled${parsed.ext}`);
 const stillMissingPath = join(parsed.dir, `${parsed.base}_ais_latlon_formula_still_missing_sog_cog${parsed.ext}`);
 const reportPath = join(parsed.dir, `${parsed.base}_ais_latlon_formula_report.txt`);
+const MIN_TIME_GAP_HOURS = 60 / 3600;
 
-const { headers, rows } = parseCsv(readFileSync(inputPath, "utf8"));
+let rawInput;
+try {
+  rawInput = readFileSync(inputPath, "utf8");
+} catch (err) {
+  console.error(`Gagal membaca input CSV: ${inputPath} (${err.code ?? err.message})`);
+  process.exit(1);
+}
+const { headers, rows } = parseCsv(rawInput);
 
 const addedColumns = [
   "Sog_before_ais_latlon_formula",
@@ -51,7 +59,6 @@ let alreadyComplete = 0;
 let filledFromBeforeAfter = 0;
 let filledStationaryCog = 0;
 let filledFromSameMmsiScene = 0;
-let stillMissing = 0;
 
 for (const row of rows) {
   row.Sog_before_ais_latlon_formula = value(row.Sog);
@@ -129,7 +136,6 @@ for (const row of rows) {
   }
 
   if (hasMissingSogOrCog(row)) {
-    stillMissing += 1;
     if (!row.ais_latlon_formula_status) {
       row.ais_latlon_formula_status = "still_missing_no_second_timestamped_ais_point";
       row.ais_latlon_formula_source = "not_filled";
@@ -139,8 +145,8 @@ for (const row of rows) {
 }
 
 const missingRows = rows.filter(hasMissingSogOrCog);
-writeFileSync(outputPath, stringifyCsv(outputHeaders, rows), "utf8");
-writeFileSync(stillMissingPath, stringifyCsv(outputHeaders, missingRows), "utf8");
+writeOutput(outputPath, stringifyCsv(outputHeaders, rows));
+writeOutput(stillMissingPath, stringifyCsv(outputHeaders, missingRows));
 
 const report = [
   "AIS lat/lon SOG/COG formula fill report",
@@ -167,7 +173,7 @@ const report = [
   "- Rows without a second timestamped AIS point are left blank.",
 ].join("\n");
 
-writeFileSync(reportPath, report, "utf8");
+writeOutput(reportPath, report);
 console.log(report);
 
 function computeFromBeforeAfter(row) {
@@ -201,7 +207,7 @@ function computeFromSameMmsiScene(row) {
   for (const point of points) {
     if (point.row === row) continue;
     const hoursAbs = Math.abs(point.sceneTime - sceneTime) / 3_600_000;
-    if (!(hoursAbs > 0)) continue;
+    if (!(hoursAbs >= MIN_TIME_GAP_HOURS)) continue;    
     if (!best || hoursAbs < best.hoursAbs) best = { ...point, hoursAbs };
   }
   if (!best) return null;
@@ -249,6 +255,7 @@ function parsePath(path) {
 }
 
 function parseCsv(input) {
+  if (input.charCodeAt(0) === 0xFEFF) input = input.slice(1);
   const allRows = [];
   let row = [];
   let field = "";
@@ -332,17 +339,18 @@ function number(input) {
 function parseDate(input) {
   const raw = value(input);
   if (!raw) return null;
-  const date = new Date(raw);
+  if (!/^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/.test(raw)) return null;
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(raw) ? `${raw.replace(" ", "T")}Z` : raw;
+  const date = new Date(normalized);
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function sceneTimestamp(row) {
   const fromScene = value(row.scene).match(/(\d{8}T\d{6})/);
-  if (fromScene) {
-    const s = fromScene[1];
-    return new Date(`${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T${s.slice(9, 11)}:${s.slice(11, 13)}:${s.slice(13, 15)}Z`);
-  }
-  return null;
+  if (!fromScene) return null;
+  const s = fromScene[1];
+  const date = new Date(`${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T${s.slice(9, 11)}:${s.slice(11, 13)}:${s.slice(13, 15)}Z`);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function finiteLatLon(lat, lon) {
@@ -385,4 +393,13 @@ function formatNumber(input, digits) {
 function formatAngle(input) {
   if (!Number.isFinite(input)) return "";
   return formatNumber(((input % 360) + 360) % 360, 6);
+}
+
+function writeOutput(path, content) {
+  try {
+    writeFileSync(path, content, "utf8");
+  } catch (err) {
+    console.error(`Gagal menulis file: ${path} (${err.code ?? err.message})`);
+    process.exit(1);
+  }
 }

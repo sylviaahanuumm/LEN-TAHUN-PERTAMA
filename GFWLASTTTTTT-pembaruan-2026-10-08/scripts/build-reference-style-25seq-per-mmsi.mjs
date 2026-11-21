@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -22,7 +22,7 @@ const outputDir = resolve(
 );
 const sourceRenderer = resolve(
   args["source-renderer"] ??
-  "D:/FILE FIFI/GFW/GFWAISSAR-ai-test/scripts/build-ais-kalman-patches.mjs",
+  join(repoRoot, "scripts", "build-ais-kalman-patches.mjs"),
 );
 const sequenceLength = 25;
 const windowStride = positiveInteger(args["window-stride"], 0);
@@ -30,7 +30,11 @@ const multipleWindowsPerMmsi = windowStride > 0;
 const stagingDir = `${outputDir}.staging`;
 
 if (!existsSync(inputDir)) throw new Error(`Input directory does not exist: ${inputDir}`);
-if (!existsSync(sourceRenderer)) throw new Error(`Reference renderer does not exist: ${sourceRenderer}`);
+if (!existsSync(sourceRenderer)) {
+  throw new Error(
+    `Reference renderer does not exist: ${sourceRenderer}\nGunakan --source-renderer <path ke build-ais-kalman-patches.mjs>.`,
+  );
+}
 if (existsSync(outputDir) || existsSync(stagingDir)) {
   throw new Error(
     `Output or staging directory already exists.\nOutput: ${outputDir}\nStaging: ${stagingDir}`,
@@ -51,9 +55,9 @@ try {
       "--sequence-selection", "residual-window",
     );
   }
-  runNode(join(repoRoot, "scripts", "create-labeled-ais-trajectories.mjs"), stagingArgs);
   stagingCreated = true;
-
+  runNode(join(repoRoot, "scripts", "create-labeled-ais-trajectories.mjs"), stagingArgs);
+  
   const stagingCsv = join(stagingDir, "trajectory_points_raw_vs_kalman.csv");
   const { rows } = parseCsv(readFileSync(stagingCsv, "utf8"));
   const rowsByMmsi = groupBy(rows, (row) => String(row.mmsi ?? "").trim());
@@ -202,7 +206,7 @@ try {
     const resolvedStaging = resolve(stagingDir);
     const resolvedInput = resolve(inputDir);
     const safeName = basename(resolvedStaging).endsWith(".staging");
-    const insideInput = resolvedStaging.startsWith(`${resolvedInput}\\`);
+    const insideInput = resolvedStaging.startsWith(`${resolvedInput}${sep}`);    
     if (!safeName || !insideInput) {
       throw new Error(`Refusing to remove unsafe staging directory: ${resolvedStaging}`);
     }
@@ -220,10 +224,12 @@ function runNode(script, scriptArgs, extraEnv = {}) {
   });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
-  if (result.status !== 0) {
-    const cause = result.error ? `\n${result.error.stack || result.error.message}` : "";
-    throw new Error(`Command failed (${result.status}): node ${script}${cause}`);
+  if (result.error) {
+    throw new Error(`Failed to start process: node ${script}\n${result.error.stack || result.error.message}`);
   }
+  if (result.status !== 0) {
+    throw new Error(`Command failed (exit ${result.status ?? result.signal}): node ${script}`);
+  }  
 }
 
 function renderGallery(records) {
@@ -307,8 +313,14 @@ function parseCsv(text) {
   const headers = records.shift() ?? [];
   return {
     headers,
-    rows: records.map((cells) =>
-      Object.fromEntries(headers.map((header, index) => [header, cells[index] ?? ""]))),
+    rows: records.map((cells, rowIndex) => {
+      if (cells.length !== headers.length) {
+        throw new Error(
+          `CSV data row ${rowIndex + 1} has ${cells.length} cells, expected ${headers.length}`,
+        );
+      }
+      return Object.fromEntries(headers.map((header, index) => [header, cells[index]]));
+    }),
   };
 }
 
@@ -364,8 +376,12 @@ function haversineM(lat1, lon1, lat2, lon2) {
   return radiusM * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+// decimals = presisi maksimum; nol di belakang koma dibuang (1.5000 -> 1.5, 100.000 -> 100)
 function formatNumber(input, decimals) {
-  return Number.isFinite(Number(input)) ? Number(input).toFixed(decimals).replace(/\.?0+$/, "") : "";
+  const value = Number(input);
+  if (!Number.isFinite(value)) return "";
+  const text = value.toFixed(decimals);
+  return text.includes(".") ? text.replace(/\.?0+$/, "") : text;
 }
 
 function escapeHtml(input) {

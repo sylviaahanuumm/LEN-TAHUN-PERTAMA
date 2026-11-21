@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, extname, join, relative } from "node:path";
+import { basename, dirname, extname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -14,7 +14,14 @@ const outputPath = join(parsed.dir, `${parsed.base}_imo_enriched${parsed.ext}`);
 const stillMissingPath = join(parsed.dir, `${parsed.base}_still_missing_imo${parsed.ext}`);
 const reportPath = join(parsed.dir, `${parsed.base}_imo_enriched_report.txt`);
 
-const { headers, rows } = parseCsv(readFileSync(inputPath, "utf8"));
+let rawInput;
+try {
+  rawInput = readFileSync(inputPath, "utf8");
+} catch (err) {
+  console.error(`Gagal membaca input CSV: ${inputPath} (${err.code ?? err.message})`);
+  process.exit(1);
+}
+const { headers, rows } = parseCsv(rawInput);
 
 const addedColumns = [
   "IMO_original",
@@ -36,6 +43,16 @@ const sourcePriority = [
   { field: "boat_agent_imo", source: "Boat Agent vessel page", urlField: "boat_agent_source_url" },
   { field: "shipxplorer_imo", source: "ShipXplorer vessel page", urlField: "shipxplorer_source_url" },
 ];
+
+const missingSourceColumns = sourcePriority.map((source) => source.field).filter((field) => !headers.includes(field));
+if (missingSourceColumns.length === sourcePriority.length) {
+  console.warn("Tidak ada satu pun kolom sumber IMO di input; IMO yang kosong akan tetap kosong.");
+} else if (missingSourceColumns.length) {
+  console.warn(`Kolom sumber IMO tidak ditemukan dan dilewati: ${missingSourceColumns.join(", ")}`);
+}
+if (!headers.includes("IMO")) {
+  console.warn("Kolom IMO tidak ada di input; semua baris akan diperlakukan sebagai IMO kosong.");
+}
 
 let alreadyPresent = 0;
 let filled = 0;
@@ -82,8 +99,8 @@ for (const row of rows) {
 }
 
 const missingRows = rows.filter((row) => !validImo(row.IMO));
-writeFileSync(outputPath, stringifyCsv(outputHeaders, rows), "utf8");
-writeFileSync(stillMissingPath, stringifyCsv(outputHeaders, missingRows), "utf8");
+writeOutput(outputPath, stringifyCsv(outputHeaders, rows));
+writeOutput(stillMissingPath, stringifyCsv(outputHeaders, missingRows));
 
 const report = [
   "IMO enrichment report",
@@ -108,19 +125,16 @@ const report = [
   "- Rows without a valid source are left blank; no IMO is guessed from vessel name/MMSI.",
 ].join("\n");
 
-writeFileSync(reportPath, report, "utf8");
+writeOutput(reportPath, report);
 console.log(report);
 
 function parsePath(path) {
   const ext = extname(path);
-  return {
-    dir: dirname(path),
-    base: path.slice(dirname(path).length + 1, path.length - ext.length),
-    ext,
-  };
+  return { dir: dirname(path), base: basename(path, ext), ext };
 }
 
 function parseCsv(input) {
+  if (input.charCodeAt(0) === 0xFEFF) input = input.slice(1);
   const allRows = [];
   let row = [];
   let field = "";
@@ -196,15 +210,19 @@ function imoCheckDigitOk(digits) {
 
 // Mengambil nomor IMO yang sah: 7 angka yang tidak menempel pada angka lain (bukan potongan MMSI atau nomor
 // panjang lain) dan lolos angka pemeriksa. Nilai yang tidak memenuhi menjadi kosong.
-function normalizeImo(input) {
-  const raw = value(input);
-  if (!raw) return "";
-  for (const match of raw.matchAll(/(?<!\d)\d{7}(?!\d)/g)) {
-    if (imoCheckDigitOk(match[0])) return match[0];
-  }
-  return "";
+function validImo(input) {
+  return normalizeImo(input) !== "";
 }
 
 function validImo(input) {
   return /^\d{7}$/.test(normalizeImo(input));
+}
+
+function writeOutput(path, content) {
+  try {
+    writeFileSync(path, content, "utf8");
+  } catch (err) {
+    console.error(`Gagal menulis file: ${path} (${err.code ?? err.message})`);
+    process.exit(1);
+  }
 }

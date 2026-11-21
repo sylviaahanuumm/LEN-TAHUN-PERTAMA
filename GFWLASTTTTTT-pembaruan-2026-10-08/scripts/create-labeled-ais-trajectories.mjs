@@ -199,8 +199,8 @@ for (const track of outputTrackParts) {
           ? `Kalman is calculated on all ${sourcePointCount} ordered observations in this continuous track part. The SVG overview uses the full track, while the detail and CSV export use ${track.items.length} contiguous real observations from source sequence ${selectionStart}-${selectionEnd}, selected with ${sequenceSelectionStrategy}. No interpolation or synthetic points were added.`
           : `AIS input and Kalman use all ${track.items.length} available real sequence points because this track has no more than the ${sequenceLimitPerTrack}-sequence limit. No interpolation or synthetic points were added.`
       )
-      : `AIS input and Kalman use and display all ${track.items.length} timestamped points. The SVG magnifies only the visual AIS-to-Kalman residual and labels its factor; CSV/GeoJSON coordinates remain original. No interpolation, point limiting, or synthetic points were added.`;
-
+      : `AIS input and Kalman use and display all ${track.items.length} timestamped points. Coordinates are not magnified; the residual chart reports the AIS-to-Kalman difference directly in meters. CSV/GeoJSON coordinates remain original. No interpolation, point limiting, or synthetic points were added.`;
+    
     rawFeatures.push(lineFeature(track, stats, "ais_input", track.items.map((item) => [item.lon, item.lat])));
     kalmanFeatures.push(
       lineFeature(
@@ -492,7 +492,8 @@ function makeMmsiTrackPart(mmsi, items) {
 
 function limitTrackForSequenceExport(track, maximumPoints) {
   const selected = selectSequenceItems(track.items, maximumPoints, sequenceSelectionStrategy);
-  const selectedSourceIndexes = selected.map((item) => track.items.indexOf(item) + 1);
+  const indexByItem = new Map(track.items.map((item, index) => [item, index]));
+  const selectedSourceIndexes = selected.map((item) => indexByItem.get(item) + 1);
   const startIndex = Math.min(...selectedSourceIndexes) - 1;
   const endIndex = Math.max(...selectedSourceIndexes) - 1;
   const clonedItems = selected.map((item, index) => ({
@@ -967,7 +968,7 @@ function selectDistanceSpreadItems(items, maximumPoints) {
 
   const selectedIndexes = new Set();
   for (let i = 0; i < maximumPoints; i += 1) {
-    const targetDistance = (totalDistance * i) / (maximumPoints - 1);
+    const targetDistance = maximumPoints === 1 ? 0 : (totalDistance * i) / (maximumPoints - 1);    
     const nearest = nearestUnusedDistanceIndex(cumulative, targetDistance, selectedIndexes);
     selectedIndexes.add(nearest);
   }
@@ -980,7 +981,7 @@ function selectEvenIndexItems(items, maximumPoints) {
   if (items.length <= maximumPoints) return items;
   const selectedIndexes = new Set();
   for (let i = 0; i < maximumPoints; i += 1) {
-    const targetIndex = Math.round(((items.length - 1) * i) / (maximumPoints - 1));
+    const targetIndex = maximumPoints === 1 ? 0 : Math.round(((items.length - 1) * i) / (maximumPoints - 1));    
     selectedIndexes.add(nearestUnusedIndex(items.length, targetIndex, selectedIndexes));
   }
   return [...selectedIndexes]
@@ -1038,48 +1039,6 @@ function rotatePoint(point, rotation) {
   };
 }
 
-function independentAxisViewport(points, frame) {
-  const allX = points.map((point) => point.x);
-  const allY = points.map((point) => point.y);
-  let minX = Math.min(...allX);
-  let maxX = Math.max(...allX);
-  let minY = Math.min(...allY);
-  let maxY = Math.max(...allY);
-  if (maxX - minX < 1) {
-    const center = (minX + maxX) / 2;
-    minX = center - 0.5;
-    maxX = center + 0.5;
-  }
-  if (maxY - minY < 1) {
-    const center = (minY + maxY) / 2;
-    minY = center - 0.5;
-    maxY = center + 0.5;
-  }
-  const xPadding = (maxX - minX) * 0.08;
-  const yPadding = (maxY - minY) * 0.14;
-  minX -= xPadding;
-  maxX += xPadding;
-  minY -= yPadding;
-  maxY += yPadding;
-  return {
-    map(point) {
-      return [
-        frame.x + ((point.x - minX) / (maxX - minX)) * frame.width,
-        frame.y + frame.height - ((point.y - minY) / (maxY - minY)) * frame.height,
-      ];
-    },
-  };
-}
-
-function projectedSpanM(points) {
-  const allX = points.map((point) => point.x);
-  const allY = points.map((point) => point.y);
-  return Math.hypot(
-    Math.max(...allX) - Math.min(...allX),
-    Math.max(...allY) - Math.min(...allY),
-  );
-}
-
 function fitViewport(points, frame, paddingRatio, minimumSpanM) {
   const allX = points.map((point) => point.x);
   const allY = points.map((point) => point.y);
@@ -1118,23 +1077,6 @@ function fitViewport(points, frame, paddingRatio, minimumSpanM) {
   };
 }
 
-function fixedViewport(center, spanX, spanY, frame) {
-  const minX = center.x - spanX / 2;
-  const minY = center.y - spanY / 2;
-  return {
-    map(point) {
-      return [
-        frame.x + ((point.x - minX) / spanX) * frame.width,
-        frame.y + frame.height - ((point.y - minY) / spanY) * frame.height,
-      ];
-    },
-  };
-}
-
-function insideFrame(x, y, frame) {
-  return x >= frame.x && x <= frame.x + frame.width && y >= frame.y && y <= frame.y + frame.height;
-}
-
 function gridLines(frame, verticalDivisions, horizontalDivisions, className) {
   const lines = [];
   for (let i = 0; i <= verticalDivisions; i += 1) {
@@ -1161,7 +1103,7 @@ function renderGallery(bestSummaries) {
         ? `Setiap gambar berisi overview MMSI penuh, detail maksimum ${sequenceLimitPerTrack} observasi kontinu, dan grafik selisih AIS-Kalman dalam meter. Kalman dihitung lebih dahulu pada seluruh urutan MMSI; koordinat tidak dimagnifikasi atau diinterpolasi.`
         : `Setiap gambar berisi overview lintasan kontinu, detail maksimum ${sequenceLimitPerTrack} observasi berurutan, dan grafik selisih AIS-Kalman dalam meter. Kalman dihitung lebih dahulu pada seluruh track part; koordinat tidak dimagnifikasi atau diinterpolasi.`
     )
-    : "Merah adalah seluruh input AIS mentah dan biru adalah seluruh hasil Kalman. Semua titik digunakan. Karena lintasan kapal jauh lebih panjang daripada koreksi Kalman, selisih merah-biru dimagnifikasi otomatis pada SVG dan faktor pembesarannya tertulis pada gambar. CSV dan GeoJSON tetap menyimpan koordinat asli tanpa perubahan.";
+    : "Merah adalah seluruh input AIS mentah dan biru adalah seluruh hasil Kalman. Semua titik digunakan; koordinat tidak dimagnifikasi atau diinterpolasi. CSV dan GeoJSON menyimpan koordinat asli tanpa perubahan.";    
   const cards = bestSummaries
     .map(
       (row) => `      <article>
@@ -1181,7 +1123,6 @@ function renderGallery(bestSummaries) {
     body { margin: 0; padding: 24px; font-family: Arial, sans-serif; background: #eef5fb; color: #102a43; }
     h1 { margin-top: 0; }
     .note { max-width: 1100px; line-height: 1.5; }
-    .note + .note { display: none; }
     article { margin: 24px 0; padding: 18px; background: white; border: 1px solid #aac7df; border-radius: 12px; box-shadow: 0 4px 16px #315b7d1a; }
     article h2 { margin: 0 0 6px; }
     article p { margin: 0 0 14px; }
@@ -1191,8 +1132,7 @@ function renderGallery(bestSummaries) {
 <body>
   <h1>Best labeled AIS trajectory examples</h1>
   <p class="note">${escapeHtml(note)}</p>
-  <p class="note">Merah adalah seluruh input AIS mentah dan biru adalah seluruh hasil Kalman. Semua titik digunakan. Karena lintasan kapal jauh lebih panjang daripada koreksi Kalman, selisih merah–biru dimagnifikasi otomatis pada SVG dan faktor pembesarannya tertulis pada gambar. CSV dan GeoJSON tetap menyimpan koordinat asli tanpa perubahan.</p>
-${cards}
+  ${cards}
 </body>
 </html>
 `;
@@ -1390,16 +1330,26 @@ function firstNonBlank(values) {
 }
 
 function parseArgs(tokens) {
+  const booleanFlags = new Set(["position-only"]);
   const parsed = {};
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];
     if (!token.startsWith("--")) continue;
-    const key = token.slice(2);
+    const body = token.slice(2);
+    const eq = body.indexOf("=");
+    if (eq !== -1) {
+      parsed[body.slice(0, eq)] = body.slice(eq + 1);
+      continue;
+    }
+    if (booleanFlags.has(body)) {
+      parsed[body] = true;
+      continue;
+    }
     const next = tokens[i + 1];
     if (next && !next.startsWith("--")) {
-      parsed[key] = next;
+      parsed[body] = next;
       i += 1;
-    } else parsed[key] = true;
+    } else parsed[body] = true;
   }
   return parsed;
 }
@@ -1435,7 +1385,9 @@ function number(input) {
 }
 
 function formatNumber(input, digits) {
-  return Number.isFinite(input) ? input.toFixed(digits).replace(/\.?0+$/, "") : "";
+  if (!Number.isFinite(input)) return "";
+  const s = input.toFixed(digits);
+  return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
 }
 
 function normalizeAngle(input) {

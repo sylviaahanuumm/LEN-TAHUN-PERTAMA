@@ -14,8 +14,18 @@ const inputPath = process.argv[2]
 const parsed = parsePath(inputPath);
 const outputPath = join(parsed.dir, `${parsed.base}_kalman_estimated${parsed.ext}`);
 const reportPath = join(parsed.dir, `${parsed.base}_kalman_report.txt`);
+const MAX_PLAUSIBLE_SOG_KNOTS = 100;
+let singularUpdatesSkipped = 0;
 
-const { headers, rows } = parseCsv(readFileSync(inputPath, "utf8"));
+let rawInput;
+try {
+  rawInput = readFileSync(inputPath, "utf8");
+} catch (err) {
+  console.error(`Gagal membaca input CSV: ${inputPath} (${err.code ?? err.message})`);
+  process.exit(1);
+}
+const input = rawInput.charCodeAt(0) === 0xFEFF ? rawInput.slice(1) : rawInput;
+const { headers, rows } = parseCsv(input);
 
 const addedColumns = [
   "kalman_status",
@@ -100,6 +110,8 @@ for (const row of rows) {
 }
 
 for (const [mmsi, group] of groups) {
+    // R-075: bidang proyeksi meter dijangkarkan pada pengamatan pertama tiap MMSI. Akurat sekitar 1 m hingga beberapa
+  // ratus km dari titik jangkar; lintasan > 500 km dapat mengalami bias posisi yang tidak terbedakan oleh filter.
   const refLat = group[0].lat;
   const refLon = group[0].lon;
   let state = null;
@@ -199,7 +211,7 @@ for (const row of rows) {
   if (row.kalman_status === "skipped_missing_required_position_or_time") skipped += 1;
 }
 
-writeFileSync(outputPath, stringifyCsv(outputHeaders, rows), "utf8");
+writeOutput(outputPath, stringifyCsv(outputHeaders, rows));
 
 const meanResidual = residuals.length ? residuals.reduce((a, b) => a + b, 0) / residuals.length : NaN;
 const sortedResiduals = residuals.toSorted((a, b) => a - b);
@@ -232,19 +244,22 @@ const report = [
   "- Velocity measurement: SOG/COG only when present in the input row",
   "- SOG/COG is not invented when missing; those rows are updated with position only.",
   "",
+  `Kalman updates skipped (singular innovation matrix): ${singularUpdatesSkipped}`,
+  "",
   "Parameters:",
   `- Process acceleration sigma: ${processAccelerationSigma} m/s^2`,
   `- Position measurement sigma: ${positionMeasurementSigma} m`,
   "- Velocity measurement sigma: 0.75 m/s for existing values; 1.0 m/s for stationary SOG=0; 2.5 m/s for inter-scene AIS lat/lon estimates.",
+  "- Projection: meter plane anchored at the first observation of each MMSI; accurate to about 1 m within a few hundred km, trajectories spanning > 500 km may show position bias.",
 ].join("\n");
 
-writeFileSync(reportPath, report, "utf8");
+writeOutput(reportPath, report);
 console.log(report);
 
 function velocityMeasurement(row) {
   const sog = number(row.Sog);
   const cog = number(row.Cog);
-  if (!Number.isFinite(sog) || !Number.isFinite(cog) || sog < 0) return null;
+  if (!Number.isFinite(sog) || !Number.isFinite(cog) || sog < 0 || sog > MAX_PLAUSIBLE_SOG_KNOTS) return null;  
   const speed = sog * 0.514444;
   const rad = toRad(((cog % 360) + 360) % 360);
   const source = velocitySource(row);
@@ -307,7 +322,15 @@ function kalmanUpdate(state, covariance, measurement, h, r) {
   const ht = transpose(h);
   const innovation = vecSub(measurement, matVecMul(h, state));
   const s = matAdd(matMul(matMul(h, covariance), ht), r);
-  const invS = inverse2(s);
+  let invS;
+  try {
+    invS = inverse2(s);
+  } catch (err) {
+    singularUpdatesSkipped += 1;
+    console.warn(`Kalman: matriks inovasi singular, pengukuran dilewati (${err.message})`);
+    return { state, covariance };
+  }
+
   const k = matMul(matMul(covariance, ht), invS);
   const updatedState = vecAdd(state, matVecMul(k, innovation));
   const kh = matMul(k, h);
@@ -498,4 +521,13 @@ function inverse2(m) {
 
 function symmetrize(m) {
   return m.map((row, i) => row.map((value, j) => (value + m[j][i]) / 2));
+}
+
+function writeOutput(path, content) {
+  try {
+    writeFileSync(path, content, "utf8");
+  } catch (err) {
+    console.error(`Gagal menulis file: ${path} (${err.code ?? err.message})`);
+    process.exit(1);
+  }
 }

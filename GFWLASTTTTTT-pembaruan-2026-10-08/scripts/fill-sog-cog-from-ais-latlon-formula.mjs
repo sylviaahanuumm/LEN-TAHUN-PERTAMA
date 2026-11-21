@@ -25,7 +25,14 @@ const STILL_MISSING_STATUS = "still_missing_no_second_timestamped_ais_point";
 const REJECTED_AIS_TO_SAR_STATUS = "still_missing_ais_to_sar_candidate_rejected_implausible";
 const STATIONARY_STATUS = "stationary_or_near_zero_displacement";
 
-const { headers, rows } = parseCsv(readFileSync(inputPath, "utf8"));
+let rawInput;
+try {
+  rawInput = readFileSync(inputPath, "utf8");
+} catch (err) {
+  console.error(`Gagal membaca input CSV: ${inputPath} (${err.code ?? err.message})`);
+  process.exit(1);
+}
+const { headers, rows } = parseCsv(rawInput);
 
 const addedColumns = [
   "SOG_calc",
@@ -35,6 +42,9 @@ const addedColumns = [
   "sog_cog_status",
   "distance_m",
   "delta_time_s",
+    "sog_cog_source_fields",
+  "sog_cog_distance_km",
+  "sog_cog_time_hours",
 ];
 
 const outputHeaders = [...headers];
@@ -45,6 +55,18 @@ for (const col of addedColumns) {
 const missingSogBefore = rows.filter((row) => isBlank(row.Sog)).length;
 const missingCogBefore = rows.filter((row) => isBlank(row.Cog)).length;
 const { pointsByMmsi, currentPointByRowIndex } = buildAisPointIndex(rows);
+
+const rowIndexesByMmsi = new Map();
+for (const [index, row] of rows.entries()) {
+  const key = value(row.MMSI);
+  if (!rowIndexesByMmsi.has(key)) rowIndexesByMmsi.set(key, []);
+  rowIndexesByMmsi.get(key).push(index);
+}
+const rowTimeCache = new Map();
+function rowTime(index) {
+  if (!rowTimeCache.has(index)) rowTimeCache.set(index, bestCurrentTimestamp(rows[index])?.time ?? null);
+  return rowTimeCache.get(index);
+}
 
 let alreadyComplete = 0;
 let calculatedFromFormula = 0;
@@ -148,8 +170,8 @@ const missingRows = rows.filter(hasMissingSogOrCog);
 const missingSogAfter = rows.filter((row) => isBlank(row.Sog)).length;
 const missingCogAfter = rows.filter((row) => isBlank(row.Cog)).length;
 const stillMissingByStatus = countBy(missingRows, (row) => row.sog_cog_status || STILL_MISSING_STATUS);
-writeFileSync(outputPath, stringifyCsv(outputHeaders, rows), "utf8");
-writeFileSync(stillMissingPath, stringifyCsv(outputHeaders, missingRows), "utf8");
+writeOutput(outputPath, stringifyCsv(outputHeaders, rows));
+writeOutput(stillMissingPath, stringifyCsv(outputHeaders, missingRows));
 
 const report = [
   "AIS/SAR SOG/COG final enrichment report",
@@ -184,7 +206,7 @@ const report = [
   "- Rows without a second timestamped AIS point are left blank.",
 ].join("\n");
 
-writeFileSync(reportPath, report, "utf8");
+writeOutput(reportPath, report);
 console.log(report);
 
 function buildAisPointIndex(inputRows) {
@@ -428,14 +450,14 @@ function sameMmsiCogFallback(row, rowIndex, mmsi) {
   const ownCog = firstFiniteNumber(row.Cog, row.Cog_original);
   if (Number.isFinite(ownCog)) return normalizeAngle(ownCog);
 
-  const currentTime = bestCurrentTimestamp(row)?.time;
+  const currentTime = rowTime(rowIndex);
   let best = null;
-  for (const [candidateIndexText, candidate] of rows.entries()) {
-    const candidateIndex = Number(candidateIndexText);
-    if (candidateIndex === rowIndex || value(candidate.MMSI) !== mmsi) continue;
+  for (const candidateIndex of rowIndexesByMmsi.get(mmsi) ?? []) {
+    if (candidateIndex === rowIndex) continue;
+    const candidate = rows[candidateIndex];
     const cog = firstFiniteNumber(candidate.Cog, candidate.Cog_original);
     if (!Number.isFinite(cog)) continue;
-    const candidateTime = bestCurrentTimestamp(candidate)?.time;
+    const candidateTime = rowTime(candidateIndex);
     const gap = currentTime && candidateTime ? Math.abs(candidateTime - currentTime) : 0;
     if (!best || gap < best.gap) best = { cog, gap };
   }
@@ -478,8 +500,11 @@ function parseDateish(input) {
     return Number.isNaN(date.getTime()) ? null : date;
   }
 
-  const date = new Date(raw);
-  if (!Number.isNaN(date.getTime())) return date;
+  if (/^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/.test(raw)) {
+    const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(raw) ? `${raw.replace(" ", "T")}Z` : raw;
+    const date = new Date(normalized);
+    if (!Number.isNaN(date.getTime())) return date;
+  }
 
   const fromScene = raw.match(/(\d{8}T\d{6})/);
   if (!fromScene) return null;
@@ -608,20 +633,12 @@ function number(input) {
   return Number.isFinite(n) ? n : NaN;
 }
 
-function parseDate(input) {
-  const raw = value(input);
-  if (!raw) return null;
-  const date = new Date(raw);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
 function sceneTimestamp(row) {
   const fromScene = value(row.scene).match(/(\d{8}T\d{6})/);
-  if (fromScene) {
-    const s = fromScene[1];
-    return new Date(`${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T${s.slice(9, 11)}:${s.slice(11, 13)}:${s.slice(13, 15)}Z`);
-  }
-  return null;
+  if (!fromScene) return null;
+  const s = fromScene[1];
+  const date = new Date(`${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T${s.slice(9, 11)}:${s.slice(11, 13)}:${s.slice(13, 15)}Z`);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function finiteLatLon(lat, lon) {
@@ -658,10 +675,21 @@ function toDeg(rad) {
 }
 
 function formatNumber(input, digits) {
-  return Number.isFinite(input) ? input.toFixed(digits).replace(/\.?0+$/, "") : "";
+  if (!Number.isFinite(input)) return "";
+  const s = input.toFixed(digits);
+  return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
 }
 
 function formatAngle(input) {
   if (!Number.isFinite(input)) return "";
   return formatNumber(((input % 360) + 360) % 360, 6);
+}
+
+function writeOutput(path, content) {
+  try {
+    writeFileSync(path, content, "utf8");
+  } catch (err) {
+    console.error(`Gagal menulis file: ${path} (${err.code ?? err.message})`);
+    process.exit(1);
+  }
 }

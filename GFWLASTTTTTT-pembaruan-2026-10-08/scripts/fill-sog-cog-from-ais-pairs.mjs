@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, extname, join, relative } from "node:path";
+import { basename, dirname, extname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -13,8 +13,16 @@ const parsedInput = parsePath(inputPath);
 const enrichedPath = join(parsedInput.dir, `${parsedInput.base}_sog_cog_enriched${parsedInput.ext}`);
 const lookupPath = join(parsedInput.dir, `${parsedInput.base}_needs_external_sog_cog_lookup${parsedInput.ext}`);
 const reportPath = join(parsedInput.dir, `${parsedInput.base}_sog_cog_report.txt`);
+const MIN_TIME_GAP_MS = 60_000;
 
-const csv = readFileSync(inputPath, "utf8");
+let csv;
+try {
+  csv = readFileSync(inputPath, "utf8");
+} catch (err) {
+  console.error(`Gagal membaca input CSV: ${inputPath} (${err.code ?? err.message})`);
+  process.exit(1);
+}
+
 const { headers, rows } = parseCsv(csv);
 
 const addedColumns = [
@@ -143,8 +151,8 @@ const outputRows = rows.map((row) => {
   return out;
 });
 
-writeFileSync(enrichedPath, stringifyCsv(outputHeaders, outputRows), "utf8");
-writeFileSync(lookupPath, stringifyCsv(lookupHeaders, lookupRows), "utf8");
+writeOutput(enrichedPath, stringifyCsv(outputHeaders, outputRows));
+writeOutput(lookupPath, stringifyCsv(lookupHeaders, lookupRows));
 
 const report = [
   "SOG/COG enrichment report",
@@ -171,20 +179,17 @@ const report = [
   "Recommended external source for remaining rows:",
   "- Global Fishing Watch API, AIS Vessel Presence / AIS vessel track near each SAR scene timestamp.",
 ].join("\n");
-writeFileSync(reportPath, report, "utf8");
+writeOutput(reportPath, report);
 
 console.log(report);
 
 function parsePath(path) {
   const ext = extname(path);
-  return {
-    dir: dirname(path),
-    base: path.slice(dirname(path).length + 1, path.length - ext.length),
-    ext,
-  };
+  return { dir: dirname(path), base: basename(path, ext), ext };
 }
 
 function parseCsv(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
   const rows = [];
   let row = [];
   let field = "";
@@ -257,7 +262,7 @@ function readAisPair(row) {
 
   const ok = beforeTime
     && afterTime
-    && afterTime.getTime() > beforeTime.getTime()
+    && afterTime.getTime() - beforeTime.getTime() >= MIN_TIME_GAP_MS    
     && finiteLatLon(beforeLat, beforeLon)
     && finiteLatLon(afterLat, afterLon);
 
@@ -287,7 +292,9 @@ function parseDate(text) {
 }
 
 function number(text) {
-  const n = Number(value(text));
+  const raw = value(text);
+  if (raw === "") return NaN;
+  const n = Number(raw);
   return Number.isFinite(n) ? n : NaN;
 }
 
@@ -336,4 +343,13 @@ function toDeg(rad) {
 
 function formatNumber(n, digits) {
   return Number.isFinite(n) ? n.toFixed(digits).replace(/\.?0+$/, "") : "";
+}
+
+function writeOutput(path, content) {
+  try {
+    writeFileSync(path, content, "utf8");
+  } catch (err) {
+    console.error(`Gagal menulis file: ${path} (${err.code ?? err.message})`);
+    process.exit(1);
+  }
 }

@@ -16,7 +16,13 @@ const enrichedPath = join(parsedInput.dir, `${parsedInput.base}_ais_position_enr
 const lookupPath = join(parsedInput.dir, `${parsedInput.base}_needs_external_ais_position_lookup${parsedInput.ext}`);
 const reportPath = join(parsedInput.dir, `${parsedInput.base}_ais_position_report.txt`);
 
-const csv = readFileSync(inputPath, "utf8");
+let csv;
+try {
+  csv = readFileSync(inputPath, "utf8");
+} catch (err) {
+  console.error(`Gagal membaca input CSV: ${inputPath} (${err.code ?? err.message})`);
+  process.exit(1);
+}
 const { headers, rows } = parseCsv(csv);
 
 const addedColumns = [
@@ -66,6 +72,7 @@ let filled = 0;
 let needsLookup = 0;
 let invalidPairs = 0;
 let sceneOutsidePair = 0;
+let sceneTimeMissing = 0;
 
 const outputRows = rows.map((row) => {
   const out = { ...row };
@@ -76,6 +83,7 @@ const outputRows = rows.map((row) => {
 
   const sceneTime = parseDate(sceneTimestamp(row));
   out.ais_position_scene_timestamp_utc = sceneTime ? sceneTime.toISOString() : "";
+  if (!sceneTime) sceneTimeMissing += 1;
 
   if (originalLat && originalLon) {
     alreadyPresent += 1;
@@ -136,8 +144,8 @@ const outputRows = rows.map((row) => {
   return out;
 });
 
-writeFileSync(enrichedPath, stringifyCsv(outputHeaders, outputRows), "utf8");
-writeFileSync(lookupPath, stringifyCsv(lookupHeaders, lookupRows), "utf8");
+writeOutput(enrichedPath, stringifyCsv(outputHeaders, outputRows));
+writeOutput(lookupPath, stringifyCsv(lookupHeaders, lookupRows));
 
 const report = [
   "AIS position enrichment report",
@@ -152,6 +160,7 @@ const report = [
   `Scene time outside AIS pair range: ${sceneOutsidePair}`,
   `Invalid/incomplete AIS pair: ${invalidPairs}`,
   `Still needs external AIS lookup: ${needsLookup}`,
+  `Rows without derivable scene timestamp: ${sceneTimeMissing}`,
   "",
   "Method:",
   "- AIS_Latitude and AIS_Longitude are calculated only when a row has two valid timestamped AIS points around the SAR scene time.",
@@ -164,7 +173,7 @@ const report = [
   "Recommended external source for remaining rows:",
   "- Global Fishing Watch AIS vessel track / AIS Vessel Presence near each SAR scene timestamp.",
 ].join("\n");
-writeFileSync(reportPath, report, "utf8");
+writeOutput(reportPath, report);
 
 console.log(report);
 
@@ -179,10 +188,10 @@ function markNeedsLookup(out, row, reason) {
   lookupRows.push({
     scene: row.scene ?? "",
     scene_timestamp_utc: out.ais_position_scene_timestamp_utc,
-    MMSI: row.MMSI ?? row.gfw_ssvid ?? "",
+    MMSI: value(row.MMSI) || value(row.gfw_ssvid),    
     gfw_vessel_id: row.gfw_vessel_id ?? "",
     gfw_ssvid: row.gfw_ssvid ?? "",
-    Name: row.Name ?? row.gfw_name ?? "",
+    Name: value(row.Name) || value(row.gfw_name),    
     category: row.category ?? "",
     Center_latitude: row.Center_latitude ?? "",
     Center_longitude: row.Center_longitude ?? "",
@@ -201,6 +210,7 @@ function parsePath(path) {
 }
 
 function parseCsv(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1); // buang BOM UTF-8
   const rows = [];
   let row = [];
   let field = "";
@@ -298,12 +308,17 @@ function sceneTimestamp(row) {
 function parseDate(text) {
   const raw = value(text);
   if (!raw) return null;
-  const date = new Date(raw);
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(raw)
+    ? `${raw.replace(" ", "T")}Z`
+    : raw;
+  const date = new Date(normalized);
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function number(text) {
-  const n = Number(value(text));
+  const raw = value(text);
+  if (raw === "") return NaN; // Number("") = 0; sel kosong harus dianggap tidak ada, bukan koordinat 0
+  const n = Number(raw);
   return Number.isFinite(n) ? n : NaN;
 }
 
@@ -321,5 +336,16 @@ function finiteLatLon(lat, lon) {
 }
 
 function formatNumber(n, digits) {
-  return Number.isFinite(n) ? n.toFixed(digits).replace(/\.?0+$/, "") : "";
+  if (!Number.isFinite(n)) return "";
+  const s = n.toFixed(digits);
+  return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
+}
+
+function writeOutput(path, content) {
+  try {
+    writeFileSync(path, content, "utf8");
+  } catch (err) {
+    console.error(`Gagal menulis file: ${path} (${err.code ?? err.message})`);
+    process.exit(1);
+  }
 }

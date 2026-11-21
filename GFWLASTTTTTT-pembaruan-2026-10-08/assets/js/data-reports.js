@@ -277,7 +277,10 @@ import { PAGE_SIZE, renderPagination } from "./onx-pagination.js";
   }
 
   function csvCell(value) {
-    return `"${String(value ?? "").replace(/"/g, '""')}"`;
+    let str = String(value ?? "");
+    const isPlainNumber = /^[+-]?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(str);
+    if (/^[=+\-@\t\r]/.test(str) && !isPlainNumber) str = `\t${str}`;
+    return `"${str.replace(/"/g, '""')}"`;
   }
 
   function generateReport() {

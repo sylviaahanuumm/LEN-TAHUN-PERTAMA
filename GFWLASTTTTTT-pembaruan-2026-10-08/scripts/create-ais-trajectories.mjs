@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 // C.1 (laporan audit): titik potong lintasan di bujur 180° dicari di permukaan bumi dengan Turf.js.
-import { interpolatePosition, lonDelta } from "./geodesi.mjs";
+import { interpolatePositionExact, lonDelta } from "./geodesi.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(__dirname);
@@ -19,7 +19,24 @@ const comparisonLinesPath = join(outputDir, "ais_trajectories_raw_vs_kalman.geoj
 const plotDir = join(outputDir, "trajectory_plots_svg");
 const reportPath = join(outputDir, "ais_trajectories_kalman_report.txt");
 
-const { rows } = parseCsv(readFileSync(inputPath, "utf8"));
+let rawInput;
+try {
+  rawInput = readFileSync(inputPath, "utf8");
+} catch (err) {
+  console.error(`Gagal membaca input CSV: ${inputPath} (${err.code ?? err.message})`);
+  process.exit(1);
+}
+const { headers, rows } = parseCsv(rawInput);
+const requiredColumns = ["MMSI", "kalman_est_lat", "kalman_est_lon"];
+const missingColumns = requiredColumns.filter((col) => !headers.includes(col));
+if (missingColumns.length) {
+  console.error(`Input CSV tidak punya kolom wajib: ${missingColumns.join(", ")}`);
+  process.exit(1);
+}
+if (!rows.length) {
+  console.error(`Input CSV tidak berisi baris data: ${inputPath}`);
+  process.exit(1);
+}
 
 const pointHeaders = [
   "MMSI",
@@ -97,7 +114,7 @@ for (const [mmsi, group] of groups) {
   for (const p of group) {
     const lon = validCoord(p.ais_lon);
     const lat = validCoord(p.ais_lat);
-    if (lon === null || lat === null) continue; // Jangan masukkan koordinat kosong ke GeoJSON
+    if (lon === null || lat === null) continue; // Jangan masukkan koordinat kosong ke GeoJSON    
     if (finiteLatLon(lat, lon)) rawCoordinates.push([lon, lat]);
   }
   if (rawCoordinates.length >= 2) {
@@ -129,14 +146,14 @@ for (const [mmsi, group] of groups) {
   if (group.length < 2) continue;
   const svg = renderTrajectoryComparisonSvg(mmsi, group);
   if (!svg) continue;
-  writeFileSync(join(plotDir, `trajectory_${safeFileName(mmsi)}.svg`), svg, "utf8");
+  writeOutput(join(plotDir, `trajectory_${safeFileName(mmsi)}.svg`), svg);  
   plotsWritten += 1;
 }
 
-writeFileSync(pointsPath, stringifyCsv(pointHeaders, points), "utf8");
-writeFileSync(rawLinesPath, JSON.stringify({ type: "FeatureCollection", features: rawFeatures }, null, 2), "utf8");
-writeFileSync(kalmanLinesPath, JSON.stringify({ type: "FeatureCollection", features: kalmanFeatures }, null, 2), "utf8");
-writeFileSync(comparisonLinesPath, JSON.stringify({ type: "FeatureCollection", features: [...rawFeatures, ...kalmanFeatures] }, null, 2), "utf8");
+writeOutput(pointsPath, stringifyCsv(pointHeaders, points));
+writeOutput(rawLinesPath, JSON.stringify({ type: "FeatureCollection", features: rawFeatures }, null, 2));
+writeOutput(kalmanLinesPath, JSON.stringify({ type: "FeatureCollection", features: kalmanFeatures }, null, 2));
+writeOutput(comparisonLinesPath, JSON.stringify({ type: "FeatureCollection", features: [...rawFeatures, ...kalmanFeatures] }, null, 2));
 
 const report = [
   "AIS trajectory export report",
@@ -162,10 +179,11 @@ const report = [
   "- Single-point MMSI remain in the points CSV but cannot form a trajectory line.",
 ].join("\n");
 
-writeFileSync(reportPath, report, "utf8");
+writeOutput(reportPath, report);
 console.log(report);
 
 function parseCsv(input) {
+  if (input.charCodeAt(0) === 0xFEFF) input = input.slice(1);
   const allRows = [];
   let row = [];
   let field = "";
@@ -360,7 +378,7 @@ function unwrapLon(refLon, lon) {
 }
 
 // C.1: lintang titik potong di bujur 180° pada jalur terpendek (great circle) antara dua titik, dicari dengan bagi dua
-// (bisection) di sepanjang jalur memakai Turf.js. Ketelitiannya sekitar 10 cm (batas pembulatan bujur 6 desimal).
+// (bisection) di sepanjang jalur memakai Turf.js, tanpa pembulatan bujur agar bisektor konvergen penuh.
 function antimeridianCrossingLat(lat1, lon1, lat2, lon2, edge) {
   const side = (lon) => lonDelta(lon1, lon) * Math.sign(edge); // naik dari 0 sampai melewati garis 180°
   const target = Math.abs(lonDelta(lon1, edge));
@@ -368,10 +386,10 @@ function antimeridianCrossingLat(lat1, lon1, lat2, lon2, edge) {
   let hi = 1;
   for (let k = 0; k < 50; k += 1) {
     const mid = (lo + hi) / 2;
-    const p = interpolatePosition(lat1, lon1, lat2, lon2, mid);
+    const p = interpolatePositionExact(lat1, lon1, lat2, lon2, mid);
     if (side(p.lon) >= 0 && side(p.lon) < target) lo = mid; else hi = mid;
   }
-  return interpolatePosition(lat1, lon1, lat2, lon2, (lo + hi) / 2).lat;
+  return interpolatePositionExact(lat1, lon1, lat2, lon2, (lo + hi) / 2).lat;
 }
 
 // Garis lintasan GeoJSON. Bagian yang melewati bujur 180° dipotong tepat di garis itu, sesuai RFC 7946 bagian 3.1.9
@@ -443,4 +461,13 @@ function escapeXml(input) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function writeOutput(path, content) {
+  try {
+    writeFileSync(path, content, "utf8");
+  } catch (err) {
+    console.error(`Gagal menulis file: ${path} (${err.code ?? err.message})`);
+    process.exit(1);
+  }
 }

@@ -8,10 +8,18 @@
     const logout = event.target.closest?.("[data-onx-logout]");
     if (!logout) return;
     logout.disabled = true;
+    let ok = false;
     try {
-      await fetch("/api/auth/logout", { method: "POST" });
+      const response = await fetch("/api/auth/logout", { method: "POST" });
+      ok = response.ok;
+      if (!ok) console.warn("[onx-nav] logout ditolak server:", response.status);
     } catch (error) {
       console.warn("[onx-nav] logout gagal:", error);
+    }
+    if (!ok) {
+      alert("Gagal keluar dari sesi. Silakan coba lagi.");
+      logout.disabled = false;
+      return;
     }
     try {
       sessionStorage.removeItem("onx-login");

@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -42,6 +42,9 @@ for (const col of [
   "gfw_live_track_point_count",
   "gfw_live_track_nearest_time",
   "gfw_live_track_nearest_minutes",
+  "sog_cog_source_fields",
+  "sog_cog_distance_km",
+  "sog_cog_time_hours",
 ]) {
   if (!outputHeaders.includes(col)) outputHeaders.push(col);
 }
@@ -52,6 +55,7 @@ let filledPair = 0;
 let filledStationaryCogPlaceholder = 0;
 let noTrack = 0;
 let errors = 0;
+let eventFallbackCalls = 0;
 
 for (const row of rows) {
   if (!hasMissingSogOrCog(row)) continue;
@@ -63,7 +67,14 @@ for (const row of rows) {
     continue;
   }
 
-  const result = await lookupGfwTrack(vesselId, sceneTime);
+  let result;
+  try {
+    result = await lookupGfwTrack(vesselId, sceneTime);
+  } catch (err) {
+    errors += 1;
+    markStillMissing(row, `still_missing_gfw_fetch_error: ${err.message}`);
+    continue;
+  }
   if (result.error) errors += 1;
   if (result.noTrack) noTrack += 1;
 
@@ -105,8 +116,8 @@ for (const row of rows) {
 }
 
 const missingRows = rows.filter(hasMissingSogOrCog);
-writeFileSync(outputPath, stringifyCsv(outputHeaders, rows), "utf8");
-writeFileSync(auditPath, stringifyCsv(outputHeaders, missingRows), "utf8");
+writeFileAtomic(outputPath, stringifyCsv(outputHeaders, rows));
+writeFileAtomic(auditPath, stringifyCsv(outputHeaders, missingRows));
 
 const report = [
   "GFW live SOG/COG fill report",
@@ -120,10 +131,11 @@ const report = [
   `Filled stationary COG placeholder where SOG=0: ${filledStationaryCogPlaceholder}`,
   `GFW no track: ${noTrack}`,
   `GFW errors: ${errors}`,
+  `GFW track 404 -> event fallback calls (no speed/course): ${eventFallbackCalls}`,
   `Missing rows after GFW live: ${missingRows.length}`,
 ].join("\n");
 
-writeFileSync(reportPath, report, "utf8");
+writeFileAtomic(reportPath, report);
 console.log(report);
 
 async function lookupGfwTrack(vesselId, sceneTime) {
@@ -197,9 +209,8 @@ async function fetchTrack(vesselId, startDate, endDate) {
   url.searchParams.set("start-date", startDate);
   url.searchParams.set("end-date", endDate);
 
-  const res = await fetch(url.toString(), {
+  const res = await fetchWithRetry(url.toString(), {
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    signal: AbortSignal.timeout(60_000),
   });
 
   if (res.status === 404) {
@@ -242,12 +253,13 @@ async function fetchTrack(vesselId, startDate, endDate) {
 }
 
 async function fetchEventTrack(vesselId, startDate, endDate) {
+  eventFallbackCalls += 1;
   const url = new URL(`${GFW_BASE}/events`);
   url.searchParams.set("limit", "200");
   url.searchParams.set("offset", "0");
   url.searchParams.set("sort", "+start");
 
-  const res = await fetch(url.toString(), {
+  const res = await fetchWithRetry(url.toString(), {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -256,9 +268,8 @@ async function fetchEventTrack(vesselId, startDate, endDate) {
       endDate: toIsoDate(endDate),
       vessels: [vesselId],
     }),
-    signal: AbortSignal.timeout(60_000),
   });
-
+  
   if (!res.ok) return { error: `gfw_events_http_${res.status}`, track: [] };
   const json = await res.json();
   const entries = json?.entries ?? [];
@@ -302,13 +313,14 @@ function surroundingPair(track, sceneTime) {
   let before = null;
   let after = null;
   for (const point of track) {
-    if (point.time <= sceneTime) before = point;
-    if (point.time >= sceneTime) {
+    if (point.time < sceneTime) {
+      before = point;
+    } else {
       after = point;
       break;
     }
   }
-  return before && after && before !== after ? { before, after } : null;
+  return before && after ? { before, after } : null;
 }
 
 function loadEnvIfNeeded() {
@@ -476,4 +488,23 @@ function formatNumber(input, digits) {
 
 function formatAngle(input) {
   return Number.isFinite(input) ? formatNumber(normalizeAngle(input), 6) : "";
+}
+
+function writeFileAtomic(path, content) {
+  const tmpPath = `${path}.tmp`;
+  writeFileSync(tmpPath, content, "utf8");
+  renameSync(tmpPath, path);
+}
+
+async function fetchWithRetry(url, options, attempts = 4) {
+  for (let attempt = 1; ; attempt += 1) {
+    const res = await fetch(url, { ...options, signal: AbortSignal.timeout(60_000) });
+    if ((res.status === 429 || res.status >= 500) && attempt < attempts) {
+      const retryAfter = Number(res.headers.get("retry-after"));
+      const waitMs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 1000 * 2 ** (attempt - 1);
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      continue;
+    }
+    return res;
+  }
 }

@@ -1457,6 +1457,9 @@
     let language = "en";
     let activeModalType = null;
     let current = 0;
+    // T-24: loggedIn hanya penanda TAMPILAN (layar mana yang dibuka), BUKAN pengaman; siapa pun bisa mengubah
+    // sessionStorage lewat devtools. Akses ke dashboard.html, anomaly-alert.html, data-reports.html, dan /api/*
+    // ditegakkan di server oleh middleware.js lewat cookie sesi (kesepakatan #1).
     let loggedIn = false; // layar Menu (indeks 2) baru boleh dibuka lewat titik setelah login berhasil
     // Login diingat selama tab ini terbuka, supaya kembali dari dashboard (index.html#menu) tidak perlu login ulang.
     try { loggedIn = sessionStorage.getItem("onx-login") === "1"; } catch (error) { /* penyimpanan diblokir: abaikan */ }

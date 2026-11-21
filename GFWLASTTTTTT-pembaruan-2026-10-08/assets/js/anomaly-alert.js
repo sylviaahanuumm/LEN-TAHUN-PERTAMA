@@ -507,6 +507,9 @@ import { PAGE_SIZE, renderPagination } from "./onx-pagination.js";
   document.addEventListener("DOMContentLoaded", () => {
     collectElements();
     elements.tableBody.innerHTML = '<tr><td class="onx-empty" colspan="7">Loading data from the map dashboard...</td></tr>';
-    dataStore.ready.then(init);
+    dataStore.ready.then(init).catch((err) => {
+      console.error("Failed to load anomaly data:", err);
+      elements.tableBody.innerHTML = '<tr><td class="onx-empty" colspan="7">Failed to load data. Please refresh the page.</td></tr>';
+    });
   });
 })();

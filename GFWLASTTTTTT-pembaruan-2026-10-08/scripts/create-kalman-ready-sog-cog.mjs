@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, extname, join, relative } from "node:path";
+import { basename, dirname, extname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -13,7 +13,25 @@ const parsed = parsePath(inputPath);
 const outputPath = join(parsed.dir, `${parsed.base}_kalman_ready${parsed.ext}`);
 const reportPath = join(parsed.dir, `${parsed.base}_kalman_ready_report.txt`);
 
-const { headers, rows } = parseCsv(readFileSync(inputPath, "utf8"));
+let rawInput;
+try {
+  rawInput = readFileSync(inputPath, "utf8");
+} catch (err) {
+  console.error(`Gagal membaca input CSV: ${inputPath} (${err.code ?? err.message})`);
+  process.exit(1);
+}
+const input = rawInput.charCodeAt(0) === 0xFEFF ? rawInput.slice(1) : rawInput;
+const { headers, rows } = parseCsv(input);
+
+const requiredColumns = ["Sog", "Cog", "category"];
+const missingColumns = requiredColumns.filter((col) => !headers.includes(col));
+if (missingColumns.length) {
+  console.error(`Input CSV tidak punya kolom wajib: ${missingColumns.join(", ")}`);
+  process.exit(1);
+}
+if (!headers.includes("gfw_sar_bearing")) {
+  console.warn("Kolom gfw_sar_bearing tidak ada; COG kosong akan diisi dari rata-rata kategori.");
+}
 
 const addedColumns = [
   "Sog_for_kalman",
@@ -177,16 +195,15 @@ function circularMean(degrees) {
     acc.cos += Math.cos(rad);
     return acc;
   }, { sin: 0, cos: 0 });
-  return (Math.atan2(sum.sin / values.length, sum.cos / values.length) * 180 / Math.PI + 360) % 360;
+  const meanSin = sum.sin / values.length;
+  const meanCos = sum.cos / values.length;
+  if (Math.hypot(meanSin, meanCos) < 1e-10) return NaN;
+  return (Math.atan2(meanSin, meanCos) * 180 / Math.PI + 360) % 360;
 }
 
 function parsePath(path) {
   const ext = extname(path);
-  return {
-    dir: dirname(path),
-    base: path.slice(dirname(path).length + 1, path.length - ext.length),
-    ext,
-  };
+  return { dir: dirname(path), base: basename(path, ext), ext };
 }
 
 function parseCsv(input) {
@@ -266,11 +283,23 @@ function isBlank(value) {
   return text(value) === "";
 }
 
+// digits = presisi maksimum; nol di belakang koma dibuang (1.500000 -> 1.5, 90.000000 -> 90)
 function formatNumber(value, digits) {
-  return Number.isFinite(value) ? value.toFixed(digits).replace(/\.?0+$/, "") : "";
+  if (!Number.isFinite(value)) return "";
+  const s = value.toFixed(digits);
+  return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
 }
 
 function formatAngle(value) {
   if (!Number.isFinite(value)) return "";
   return formatNumber(((value % 360) + 360) % 360, 6);
+}
+
+function writeOutput(path, content) {
+  try {
+    writeFileSync(path, content, "utf8");
+  } catch (err) {
+    console.error(`Gagal menulis file: ${path} (${err.code ?? err.message})`);
+    process.exit(1);
+  }
 }

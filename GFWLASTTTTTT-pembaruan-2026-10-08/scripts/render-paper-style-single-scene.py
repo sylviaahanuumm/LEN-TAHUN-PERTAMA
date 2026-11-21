@@ -214,9 +214,10 @@ def plot_points(ax: plt.Axes, rows: pd.DataFrame, traj: pd.DataFrame) -> None:
     sar_lat = pd.to_numeric(rows["Center_latitude"], errors="coerce")
     ais_lon = pd.to_numeric(rows["AIS_Longitude"], errors="coerce")
     ais_lat = pd.to_numeric(rows["AIS_Latitude"], errors="coerce")
-    kal_lon = pd.to_numeric(rows.get("kalman_est_lon"), errors="coerce")
-    kal_lat = pd.to_numeric(rows.get("kalman_est_lat"), errors="coerce")
-
+    empty_col = pd.Series(float("nan"), index=rows.index, dtype=float)
+    kal_lon = pd.to_numeric(rows["kalman_est_lon"], errors="coerce") if "kalman_est_lon" in rows.columns else empty_col
+    kal_lat = pd.to_numeric(rows["kalman_est_lat"], errors="coerce") if "kalman_est_lat" in rows.columns else empty_col
+    
     if not traj.empty and {"ais_lon", "ais_lat"}.issubset(traj.columns):
         ax.scatter(
             pd.to_numeric(traj["ais_lon"], errors="coerce"),
@@ -259,8 +260,9 @@ def render(args: argparse.Namespace) -> Path:
     raster_path = f"/vsizip/{zip_path.resolve().as_posix()}/{measurement}"
 
     with rasterio.open(raster_path) as src:
-        if not src.gcps[0]:
-            raise RuntimeError(f"{zip_path.name} has no GCP geolocation.")
+        gcp_list, _gcp_crs = src.gcps  # rasterio: src.gcps = (daftar GCP, CRS), bukan daftar langsung
+        if not gcp_list:
+            raise RuntimeError(f"{zip_path.name} has no GCP geolocation.")        
         image, lon_grid, lat_grid, footprint = display_image(src, args.max_size)
 
     xs = [p[0] for p in footprint]
@@ -298,7 +300,7 @@ def render(args: argparse.Namespace) -> Path:
     add_north_arrow(ax, xmax - 0.08 * (xmax - xmin), ymax - 0.13 * (ymax - ymin), 0.09 * (ymax - ymin))
 
     total_sar = len(rows)
-    total_ais = len(traj) if not traj.empty else int(rows["AIS_Latitude"].notna().sum())
+    total_ais = int(rows["AIS_Latitude"].notna().sum())    
     total_dark = int(rows["pred_label"].eq("go_dark").sum())
     total_kalman = int(rows.get("kalman_est_lat", pd.Series(dtype=float)).notna().sum())
     handles = [

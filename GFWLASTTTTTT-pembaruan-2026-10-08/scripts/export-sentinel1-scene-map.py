@@ -1861,14 +1861,14 @@ def render_scene(zip_path: Path, args: argparse.Namespace) -> list[Path]:
                 kalman_valid = [(x, y) for x, y in kalman_pts if np.isfinite(x) and np.isfinite(y)]
 
                 if len(raw_valid) >= 2:
-                    xs, ys = zip(*raw_pts)
+                    xs, ys = zip(*raw_valid)                    
                     ax.plot(xs, ys, color="#00b7ff", linewidth=1.1, alpha=0.78, linestyle="--", zorder=3)
                     drew_raw_trajectory = True
                 elif len(raw_valid) == 1:
                     ax.scatter([raw_valid[0][0]], [raw_valid[0][1]], s=12, c="#00b7ff", edgecolors="black", linewidths=0.25, zorder=4)
 
                 if len(kalman_valid) >= 2:
-                    xs, ys = zip(*kalman_pts)
+                    xs, ys = zip(*kalman_valid)                    
                     ax.plot(xs, ys, color="#ffd21a", linewidth=1.25, alpha=0.88, zorder=4)
                     drew_kalman_trajectory = True
                 elif len(kalman_valid) == 1:

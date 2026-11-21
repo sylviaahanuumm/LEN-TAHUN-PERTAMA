@@ -125,7 +125,7 @@ function loadEnvIfNeeded() {
     const envPath = join(repoRoot, name);
     if (!existsSync(envPath)) continue;
     for (const line of readFileSync(envPath, "utf8").split(/\r?\n/)) {
-      const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+      const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
       if (!match) continue;
       const key = match[1];
       let val = match[2].trim();
@@ -202,6 +202,18 @@ function appendCsv(path, headers, rows) {
   if (!rows.length) return;
   ensureCsv(path, headers);
   appendFileSync(path, rows.map((row) => csvLine(headers, row)).join(""), "utf8");
+}
+
+function mmsiInCsv(path) {
+  if (!existsSync(path)) return new Set();
+  return new Set(parseCsv(readFileSync(path, "utf8")).rows.map((row) => normalizeMmsi(row.MMSI)));
+}
+
+function removeMmsiRows(path, headers, mmsi) {
+  if (!existsSync(path)) return;
+  const parsed = parseCsv(readFileSync(path, "utf8"));
+  const kept = parsed.rows.filter((row) => normalizeMmsi(row.MMSI) !== mmsi);
+  writeFileSync(path, headers.join(",") + "\n" + kept.map((row) => csvLine(headers, row)).join(""), "utf8");
 }
 
 function normalizeMmsi(value) {
@@ -468,7 +480,8 @@ function parseTrackPoints(json) {
 
 function normalizeTimestamp(value) {
   if (value == null || value === "") return "";
-  if (typeof value === "number") return new Date(value * (value > 10_000_000_000 ? 1 : 1000)).toISOString();
+  // Angka > 1e12 dianggap milidetik (setelah Sep 2001), selain itu detik; sama dengan parseDateish di skrip lain.
+  if (typeof value === "number") return new Date(value * (value > 1e12 ? 1 : 1000)).toISOString();
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toISOString();
 }
@@ -503,7 +516,7 @@ async function processMmsi(mmsi, token, args) {
       start_date: args.startDate,
       end_date: args.endDate,
       fetched_at_utc: new Date().toISOString(),
-      done: true,
+      done: !search.search_status.startsWith("search_"),      
     };
     return { report, trackRows: [] };
   }
@@ -536,7 +549,7 @@ async function processMmsi(mmsi, token, args) {
     start_date: args.startDate,
     end_date: args.endDate,
     fetched_at_utc: new Date().toISOString(),
-    done: true,
+    done: ["track_success", "track_empty", "track_not_found"].includes(track.track_status),    
   };
   return { report, trackRows };
 }
@@ -572,12 +585,17 @@ async function main() {
   const paths = outputPaths(args);
   ensureCsv(paths.tracks, TRACK_HEADERS);
   ensureCsv(paths.report, REPORT_HEADERS);
+  const mmsiWithRows = new Set([...mmsiInCsv(paths.tracks), ...mmsiInCsv(paths.report)]);
 
   const allMmsi = uniqueCandidateMmsi(args.candidates);
   let selectedMmsi = args.mmsi
     ? args.mmsi.split(",").map(normalizeMmsi).filter(Boolean)
     : allMmsi.slice();
   const allowed = new Set(allMmsi);
+  const skippedMmsi = selectedMmsi.filter((mmsi) => !allowed.has(mmsi));
+  if (skippedMmsi.length) {
+    console.warn(`MMSI berikut tidak ada di file kandidat dan dilewati: ${skippedMmsi.join(", ")}`);
+  }
   selectedMmsi = selectedMmsi.filter((mmsi) => allowed.has(mmsi));
   if (args.limit > 0) selectedMmsi = selectedMmsi.slice(0, args.limit);
 
@@ -603,10 +621,15 @@ async function main() {
 
     console.log(`[${index + 1}/${selectedMmsi.length}] MMSI ${mmsi} fetching...`);
     const { report, trackRows } = await processMmsi(mmsi, token, args);
-    progress.mmsi[mmsi] = report;
-    saveProgress(paths.progress, progress);
+    if (mmsiWithRows.has(mmsi)) {
+      removeMmsiRows(paths.tracks, TRACK_HEADERS, mmsi);
+      removeMmsiRows(paths.report, REPORT_HEADERS, mmsi);
+      mmsiWithRows.delete(mmsi);
+    }
     appendCsv(paths.tracks, TRACK_HEADERS, trackRows);
     appendCsv(paths.report, REPORT_HEADERS, [report]);
+    progress.mmsi[mmsi] = report;
+    saveProgress(paths.progress, progress);
     console.log(
       `[${index + 1}/${selectedMmsi.length}] MMSI ${mmsi} search=${report.search_status} track=${report.track_status} points=${report.point_count}`
     );
