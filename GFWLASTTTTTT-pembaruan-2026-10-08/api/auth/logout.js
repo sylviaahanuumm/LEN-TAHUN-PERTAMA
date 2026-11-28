@@ -1,5 +1,7 @@
 import { sendProblem } from "../_problem.js";
 import { clearSessionCookie, readCookie, revokeSession, SESSION_COOKIE, verifySessionToken } from "../_session.js";
+import { clientIpKey } from "../_rate-limit.js";
+import { rbacEnabled } from "../_rbac.js";
 
 // F3-S: keluar (logout). POST → cookie sesi dihapus dari browser dan ID sesinya dicatat sebagai dicabut
 // (lihat revokeSession di api/_session.js). Selalu 200 { ok: true }, juga bila sesinya sudah tidak berlaku.
@@ -35,6 +37,16 @@ export default async function handler(req, res) {
     payload = await verifySessionToken(readCookie(req.headers?.cookie, SESSION_COOKIE));
   } catch (err) {
     console.warn("[logout] cookie sesi tidak bisa diperiksa:", err?.message || err);
+  }
+  if (payload && rbacEnabled()) {
+    // RBAC: sesi dicatat sebagai logout di database (tetap berlaku walau server dinyalakan ulang) dan masuk audit log.
+    try {
+      const { revokeSessionId, audit } = await import("../_rbac.js");
+      await revokeSessionId(payload.sid, payload.exp);
+      audit({ actor: payload.sub, action: "logout", ip: clientIpKey(req) });
+    } catch (err) {
+      logRevokeProblem("rbac_gagal", err);
+    }
   }
   if (payload) {
     try {

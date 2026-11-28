@@ -3,10 +3,13 @@ import crypto from "node:crypto";
 import { applyRateLimit, clientIpKey } from "../_rate-limit.js";
 import { incrementWithTtl } from "../_redis.js";
 import { createSession, sessionCookie, sessionSecret } from "../_session.js";
+import { rbacEnabled } from "../_rbac.js";
 
 // Login Ocean Nexus diperiksa di server. Nama pengguna dan kata sandi dibaca dari pengaturan server
 // (LOGIN_USERNAME dan LOGIN_PASSWORD di .env.local atau Vercel), tidak lagi tertulis di kode halaman.
 // POST { username, password }  →  200 { ok: true } | 401 { ok: false } | 429 (terlalu sering) | 503 (belum diatur)
+// RBAC (AUTH_MODE=rbac): setiap orang punya akun sendiri di database (api/_rbac.js). Balasan 200 juga berisi
+// { mustChangePassword, role }. Akun terkunci 15 menit setelah 5 kali salah; pesan galat tetap sama untuk semua kasus.
 // F3-S (laporan audit B.4 dan Fase 3): login yang benar mendapat cookie sesi HttpOnly (api/_session.js); halaman,
 // data, dan API lain hanya dikirim server bila cookie itu sah (middleware.js di Vercel).
 
@@ -63,6 +66,8 @@ export default async function handler(req, res) {
   const allowed = await applyRateLimit(req, res, { name: "login", limit: 10, windowSeconds: 10 * 60 });
   if (!allowed) return;
 
+  if (rbacEnabled()) return loginRbac(req, res);
+
   const expectedUser = String(process.env.LOGIN_USERNAME || "").trim();
   const expectedPassword = String(process.env.LOGIN_PASSWORD || "");
   if (!expectedUser || !expectedPassword || !sessionSecret()) {
@@ -81,6 +86,36 @@ export default async function handler(req, res) {
     const { token, payload } = await createSession(expectedUser);
     res.setHeader("Set-Cookie", sessionCookie(token, payload, { secure: isSecure(req) }));
     return res.json({ ok: true });
+  } catch (err) {
+    console.error("[login] sesi gagal dibuat:", err);
+    return sendProblem(res, 500, "Gagal membuat sesi. Coba lagi.", { ok: false });
+  }
+}
+
+// Login RBAC: akun per orang dari database. Pesan untuk semua kegagalan sama (nama tidak dikenal, kata sandi salah,
+// akun terkunci, atau nonaktif), supaya penyerang tidak bisa menebak nama pengguna mana yang ada.
+async function loginRbac(req, res) {
+  if (!sessionSecret()) {
+    console.warn("[login] SESSION_SECRET (minimal 32 karakter) belum diatur di server.");
+    return sendProblem(res, 503, "Login belum diatur di server.", { ok: false });
+  }
+  const { attemptLogin, permissionsOfRole } = await import("../_rbac.js");
+  const { username, password } = readBody(req);
+  if (typeof username !== "string" || typeof password !== "string" || username.length > 64 || password.length > 256) {
+    await delayAfterFailure(req);
+    return sendProblem(res, 401, "Nama pengguna atau kata sandi salah, atau akun sedang terkunci sementara.", { ok: false });
+  }
+  const result = await attemptLogin(username, password, clientIpKey(req));
+  if (!result.ok) {
+    await delayAfterFailure(req);
+    return sendProblem(res, 401, "Nama pengguna atau kata sandi salah, atau akun sedang terkunci sementara.", { ok: false });
+  }
+  const user = result.user;
+  try {
+    const { token, payload } = await createSession(user.username, Date.now(), { uid: user.id, sv: Number(user.session_version) });
+    res.setHeader("Set-Cookie", sessionCookie(token, payload, { secure: isSecure(req) }));
+    const permissions = [...(await permissionsOfRole(user.role_id))].sort();
+    return res.json({ ok: true, mustChangePassword: Boolean(user.must_change_password), role: user.role, permissions });
   } catch (err) {
     console.error("[login] sesi gagal dibuat:", err);
     return sendProblem(res, 500, "Gagal membuat sesi. Coba lagi.", { ok: false });

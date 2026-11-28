@@ -65,11 +65,15 @@ async function sign(payload, secret) {
 
 const seconds = (ms) => Math.floor(ms / 1000);
 
-export async function createSession(sub, now = Date.now()) {
+// RBAC (api/_rbac.js): extra boleh berisi uid (ID user) dan sv (session_version user), supaya server bisa memeriksa
+// user, role, dan izinnya di database pada setiap permintaan, dan mematikan sesi lama bila kata sandi/role berubah.
+export async function createSession(sub, now = Date.now(), extra = {}) {
   const secret = sessionSecret();
   if (!secret) throw new Error("SESSION_SECRET belum diatur (minimal 32 karakter).");
   const t = seconds(now);
   const payload = { sid: b64urlEncode(crypto.getRandomValues(new Uint8Array(16))), sub: String(sub), iat: t, act: t, exp: t + SESSION_ABSOLUTE_SECONDS };
+  if (Number.isInteger(extra.uid)) payload.uid = extra.uid;
+  if (Number.isInteger(extra.sv)) payload.sv = extra.sv;
   return { token: await sign(payload, secret), payload };
 }
 
@@ -184,7 +188,8 @@ export function isPageRequest(pathname) {
 }
 
 // Keputusan untuk satu permintaan:
-//   { action: "allow", setCookie? }   lanjutkan (setCookie = cookie yang diperbarui, bila ada)
+//   { action: "allow", setCookie?, session? }   lanjutkan (setCookie = cookie yang diperbarui, bila ada;
+//                                               session = isi cookie sesi, dipakai pemeriksaan RBAC)
 //   { action: "redirect", location }  halaman tanpa sesi: ke halaman login, lalu kembali ke halaman ini
 //   { action: "deny" }                data/API tanpa sesi: 401
 export async function decideAccess({ method = "GET", url, cookieHeader, secure = false, now = Date.now() }) {
@@ -194,7 +199,7 @@ export async function decideAccess({ method = "GET", url, cookieHeader, secure =
   const payload = await verifySessionToken(readCookie(cookieHeader, SESSION_COOKIE), now, secret);
   if (payload && !(await isRevoked(payload.sid))) {
     const renewed = await renewIfNeeded(payload, now, secret);
-    return { action: "allow", setCookie: renewed ? sessionCookie(renewed.token, renewed.payload, { secure, now }) : undefined };
+    return { action: "allow", setCookie: renewed ? sessionCookie(renewed.token, renewed.payload, { secure, now }) : undefined, session: payload };
   }
   if (isPageRequest(pathname)) return { action: "redirect", location: `/index.html?next=${encodeURIComponent(pathname + search)}` };
   return { action: "deny" };

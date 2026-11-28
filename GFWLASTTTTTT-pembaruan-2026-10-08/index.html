@@ -838,6 +838,39 @@
       line-height: 1.5;
     }
 
+    /* Elemen yang disembunyikan RBAC (atribut hidden) tetap tersembunyi walau kelasnya memakai display: grid/flex. */
+    [hidden] {
+      display: none !important;
+    }
+
+    .akun-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: 10px 14px;
+      width: min(760px, 100%);
+      margin: 0 auto 8px;
+      color: rgba(232, 244, 255, 0.85);
+      font-size: 14px;
+    }
+
+    .akun-link {
+      padding: 7px 14px;
+      border: 1px solid rgba(190, 231, 255, 0.4);
+      border-radius: 10px;
+      background: rgba(3, 26, 44, 0.62);
+      color: #e8f4ff;
+      font: inherit;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    .akun-link:hover {
+      border-color: #8fdcff;
+    }
+
     .option-message {
       min-height: 22px;
       margin: -18px auto 20px;
@@ -1774,7 +1807,7 @@
           </div>
 
           <div class="option-grid">
-            <a class="option-card featured" href="dashboard.html">
+            <a class="option-card featured" href="dashboard.html" data-perm="dashboard:view">
               <svg class="option-icon" viewBox="0 0 96 96" aria-hidden="true">
                 <path d="M17 28 38 18l21 10 20-10v50L58 78 37 68 17 78Z" fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round"></path>
                 <path d="M38 18v50M59 28v50" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round"></path>
@@ -1793,7 +1826,7 @@
               </span>
             </a>
 
-            <a class="option-card" href="anomaly-alert.html">
+            <a class="option-card" href="anomaly-alert.html" data-perm="anomaly:view">
               <svg class="option-icon" viewBox="0 0 96 96" aria-hidden="true">
                 <path d="M18 58 78 18 68 78 48 62 34 76 36 54Z" fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round"></path>
                 <path d="M36 54 78 18" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round"></path>
@@ -1829,6 +1862,13 @@
             </article>
           </div>
           <div class="option-message" id="option-message" aria-live="polite"></div>
+          <!-- RBAC: tampil hanya bila login per user aktif (assets/js/onx-rbac.js). Tombol hanya tampilan; izin dicek di server. -->
+          <div class="akun-bar" data-rbac-only hidden>
+            <span class="akun-who"><span data-i18n="rbac.signedInAs">Signed in as</span> <b data-rbac-name></b> · <span data-rbac-role></span></span>
+            <a class="akun-link" href="akun.html" data-i18n="rbac.account">My Account</a>
+            <a class="akun-link" href="kelola-user.html" data-perm="user:manage" data-i18n="rbac.users">Manage Users</a>
+            <button class="akun-link" type="button" data-rbac-logout data-i18n="rbac.signOut">Sign out</button>
+          </div>
         </main>
 
         <footer class="screen-footer">
@@ -1902,7 +1942,7 @@
         "login.password": "Password",
         "login.submit": "Login",
         "login.required": "Enter username and password first.",
-        "login.invalid": "Username or password is incorrect.",
+        "login.invalid": "Username or password is incorrect, or the account is temporarily locked.",
         "login.checking": "Checking…",
         "login.tooMany": "Too many attempts. Wait a few minutes and try again.",
         "login.unavailable": "Login is not available right now. Try again later.",
@@ -1916,6 +1956,10 @@
         "option.alertBody": "Review detected vessel anomalies, verify details, and send validated alerts.",
         "option.backTitle": "Back to Main Menu",
         "option.backBody": "Return to the Ocean Nexus 2026 welcome page.",
+        "rbac.signedInAs": "Signed in as",
+        "rbac.account": "My Account",
+        "rbac.users": "Manage Users",
+        "rbac.signOut": "Sign out",
         "option.alertStatus": "Alert panel opened.",
         "map.cargo": "Cargo",
         "map.tanker": "Tanker",
@@ -1944,7 +1988,7 @@
         "login.password": "Kata sandi",
         "login.submit": "Masuk",
         "login.required": "Isi nama pengguna dan kata sandi terlebih dahulu.",
-        "login.invalid": "Nama pengguna atau kata sandi salah.",
+        "login.invalid": "Nama pengguna atau kata sandi salah, atau akun sedang terkunci sementara.",
         "login.checking": "Memeriksa…",
         "login.tooMany": "Terlalu banyak percobaan. Tunggu beberapa menit lalu coba lagi.",
         "login.unavailable": "Login sedang tidak tersedia. Coba lagi nanti.",
@@ -1958,6 +2002,10 @@
         "option.alertBody": "Tinjau anomali kapal terdeteksi, verifikasi detail, dan kirim alert tervalidasi.",
         "option.backTitle": "Kembali ke Menu Utama",
         "option.backBody": "Kembali ke halaman awal Ocean Nexus 2026.",
+        "rbac.signedInAs": "Masuk sebagai",
+        "rbac.account": "Akun Saya",
+        "rbac.users": "Kelola User",
+        "rbac.signOut": "Keluar",
         "option.alertStatus": "Panel Kirim Alert dibuka.",
         "map.cargo": "Kargo",
         "map.tanker": "Tanker",
@@ -2260,6 +2308,14 @@
       status.textContent = "";
       loggedIn = true;
       try { sessionStorage.setItem("onx-login", "1"); } catch (error) { /* penyimpanan diblokir: abaikan */ }
+      // RBAC: akun baru / baru di-reset wajib ganti kata sandi dulu (server juga menolak halaman lain sebelum diganti).
+      let loginInfo = {};
+      try { loginInfo = await response.json(); } catch (error) { loginInfo = {}; }
+      if (loginInfo.mustChangePassword) {
+        location.replace("/akun.html?wajib=1");
+        return;
+      }
+      window.dispatchEvent(new Event("onx:login"));
       // Datang dari halaman lain: kembali ke halaman itu (termasuk tanda #, misalnya #temuan=...).
       if (nextTarget) {
         location.replace(nextTarget + location.hash);
@@ -2296,5 +2352,6 @@
     }
   </script>
   <script type="module" src="assets/js/peta-kapal.js"></script>
+  <script type="module" src="assets/js/onx-rbac.js"></script>
 </body>
 </html>

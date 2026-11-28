@@ -77,10 +77,33 @@ async function sessionGate(req: IncomingMessage, res: ServerResponse, next: () =
   const url = req.url || "/";
   if (VITE_INTERNAL.test(url)) return next();
   try {
-    const { decideAccess, UNAUTHORIZED_BODY } = await loadSession();
+    const { decideAccess, UNAUTHORIZED_BODY, clearSessionCookie } = await loadSession();
     const decision = await decideAccess({ method: req.method, url, cookieHeader: req.headers.cookie, secure: false });
     if (decision.action === "allow") {
       if (decision.setCookie) res.setHeader("Set-Cookie", decision.setCookie);
+      // RBAC (AUTH_MODE=rbac): sama dengan server/index.mjs, izin diperiksa di database (api/_rbac.js).
+      const rbac = await loadRbac();
+      if (rbac.rbacEnabled() && decision.session) {
+        const pathname = new URL(url, "http://localhost").pathname;
+        const ip = req.socket?.remoteAddress || "";
+        const verdict = await rbac.authorizeRequest({ session: decision.session, method: req.method, pathname, headers: req.headers, ip });
+        if (verdict.action !== "allow") {
+          res.setHeader("Cache-Control", "no-store");
+          if ((verdict as { clearCookie?: boolean }).clearCookie) res.setHeader("Set-Cookie", clearSessionCookie({ secure: false }));
+          if (verdict.action === "redirect") {
+            res.statusCode = 302;
+            res.setHeader("Location", verdict.location ?? "/index.html");
+            return res.end();
+          }
+          res.statusCode = verdict.status ?? 403;
+          if (verdict.page && verdict.status === 403) {
+            res.setHeader("Content-Type", "text/html; charset=utf-8");
+            return res.end(rbac.FORBIDDEN_PAGE);
+          }
+          res.setHeader("Content-Type", "application/problem+json; charset=utf-8");
+          return res.end(JSON.stringify({ type: "about:blank", title: res.statusCode === 403 ? "Forbidden" : "Unauthorized", status: res.statusCode, detail: verdict.message, error: verdict.message }));
+        }
+      }
       return next();
     }
     res.setHeader("Cache-Control", "no-store");
@@ -97,6 +120,13 @@ async function sessionGate(req: IncomingMessage, res: ServerResponse, next: () =
     res.statusCode = 500;
     return res.end();
   }
+}
+
+type RbacModule = typeof import("./api/_rbac.js");
+let rbacModule: Promise<RbacModule> | null = null;
+function loadRbac(): Promise<RbacModule> {
+  rbacModule ??= import(pathToFileURL(path.join(__dirname, "api", "_rbac.js")).href);
+  return rbacModule;
 }
 
 type AisRelay = { handle: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>; start: () => void };
@@ -228,6 +258,8 @@ export default defineConfig({
         dashboard: path.resolve(__dirname, "dashboard.html"),
         anomalyAlert: path.resolve(__dirname, "anomaly-alert.html"),
         dataReports: path.resolve(__dirname, "data-reports.html"),
+        akun: path.resolve(__dirname, "akun.html"),
+        kelolaUser: path.resolve(__dirname, "kelola-user.html"),
         mapBackground: path.resolve(__dirname, "map-background-preview.html"),
         sceneViewer: path.resolve(__dirname, "lihat_scene_kapal.html"),
       },

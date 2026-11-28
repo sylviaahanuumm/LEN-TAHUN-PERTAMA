@@ -2,14 +2,15 @@
 // Jalankan dari folder proyek: npm run start   (butuh Node.js 22+)
 // Pengaturan lewat .env.local / environment: PORT (default 3000), HOST (default 127.0.0.1),
 // GFW_API_TOKEN, AISSTREAM_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_DEFAULT_CHAT_ID (nama lama GFW_TOKEN dan
-// TELEGRAM_CHAT_ID masih dibaca).
+// TELEGRAM_CHAT_ID masih dibaca). AUTH_MODE=rbac menyalakan login per user + role + permission (api/_rbac.js).
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as aisRelay from "./ais-relay.mjs";
-import { decideAccess, UNAUTHORIZED_BODY } from "../api/_session.js";
+import { clearSessionCookie, decideAccess, UNAUTHORIZED_BODY } from "../api/_session.js";
 import { clientIpKey } from "../api/_rate-limit.js";
+import { authorizeRequest, FORBIDDEN_PAGE, getDb, rbacEnabled } from "../api/_rbac.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC_DIR = path.join(ROOT, "public");
@@ -105,6 +106,35 @@ function sendText(res, statusCode, text) {
   res.statusCode = statusCode;
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
   res.end(text);
+}
+
+// Header keamanan untuk semua balasan (OWASP HTTP Headers Cheat Sheet). CSP di sini sengaja hanya membatasi
+// framing, <base>, form, dan plugin, supaya skrip dan peta di halaman tetap berjalan.
+function setSecurityHeaders(res, secure) {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("Content-Security-Policy", "frame-ancestors 'self'; base-uri 'self'; form-action 'self'; object-src 'none'");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  if (secure) res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+}
+
+// RBAC: balasan bila pemeriksaan izin (api/_rbac.js) tidak meloloskan permintaan.
+function sendRbacVerdict(res, verdict, secure) {
+  res.setHeader("Cache-Control", "no-store");
+  if (verdict.clearCookie) res.setHeader("Set-Cookie", clearSessionCookie({ secure }));
+  if (verdict.action === "redirect") {
+    res.writeHead(302, { Location: verdict.location });
+    return res.end();
+  }
+  if (verdict.page && verdict.status === 403) {
+    res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
+    return res.end(FORBIDDEN_PAGE);
+  }
+  const title = verdict.status === 403 ? "Forbidden" : "Unauthorized";
+  res.writeHead(verdict.status, { "Content-Type": "application/problem+json; charset=utf-8" });
+  return res.end(JSON.stringify({ type: "about:blank", title, status: verdict.status, detail: verdict.message, error: verdict.message }));
 }
 
 function sendJson(res, statusCode, data) {
@@ -285,6 +315,7 @@ const server = http.createServer(async (req, res) => {
     // TRUST_PROXY=1 (sama seperti api/_rate-limit.js); COOKIE_SECURE=1 memaksa Secure.
     const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
     const secure = process.env.COOKIE_SECURE === "1" || (process.env.TRUST_PROXY === "1" && forwardedProto === "https");
+    setSecurityHeaders(res, secure);
     const decision = await decideAccess({ method: req.method, url: req.url || "/", cookieHeader: req.headers.cookie, secure });
     if (decision.action === "redirect") {
       res.writeHead(302, { Location: decision.location, "Cache-Control": "no-store" });
@@ -295,6 +326,11 @@ const server = http.createServer(async (req, res) => {
       return res.end(UNAUTHORIZED_BODY);
     }
     if (decision.setCookie) res.setHeader("Set-Cookie", decision.setCookie);
+    // RBAC (AUTH_MODE=rbac): user, role, dan izin diperiksa di database untuk setiap halaman, data, dan API.
+    if (rbacEnabled() && decision.session) {
+      const verdict = await authorizeRequest({ session: decision.session, method: req.method, pathname: url.pathname, headers: req.headers, ip: clientIpKey(req) });
+      if (verdict.action !== "allow") return sendRbacVerdict(res, verdict, secure);
+    }
 
     if (url.pathname.startsWith("/api/ais/")) {
       if (await aisRelay.handle(req, res)) return;
@@ -320,6 +356,11 @@ const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "127.0.0.1";
 
 aisRelay.start();
+if (rbacEnabled()) {
+  // Database RBAC disiapkan sebelum server menerima permintaan (dan admin pertama dibuat bila belum ada user).
+  await getDb();
+  console.log("[server] Mode RBAC aktif: login per user, role, dan permission (database: RBAC_DB).");
+}
 server.listen(PORT, HOST, () => {
   console.log(`[server] Ocean Nexus berjalan di http://${HOST}:${PORT}`);
 });
