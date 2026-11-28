@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="id" data-rbac-auto="off">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Akun Saya - Ocean Nexus 2026</title>
+  <link rel="icon" href="assets/logos/ocean-nexus.png">
+  <link rel="stylesheet" href="assets/css/onx-akun.css">
+  <script type="module" src="assets/js/akun.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/index.html#menu"><img src="assets/logos/ocean-nexus.png" alt="">OCEAN NEXUS 2026</a>
+    <nav class="topnav" aria-label="Navigasi akun">
+      <span class="who" data-rbac-only hidden>Masuk sebagai <b data-rbac-name></b> · <span data-rbac-role></span></span>
+      <a class="btn" href="/index.html#menu" id="to-menu">Menu</a>
+      <a class="btn" href="/kelola-user.html" data-perm="user:manage" hidden>Kelola User</a>
+      <button class="btn danger" type="button" id="logout">Keluar</button>
+    </nav>
+  </header>
+
+  <main>
+    <h1>Akun Saya</h1>
+    <p class="lead">Data akun Anda dan penggantian kata sandi.</p>
+
+    <div class="banner" id="must-change" hidden>
+      <b>Wajib ganti kata sandi.</b> Ini login pertama Anda atau kata sandi Anda baru di-reset oleh Admin.
+      Ganti kata sandi di bawah ini sebelum memakai aplikasi.
+    </div>
+    <div class="banner" id="legacy" hidden>
+      Fitur akun per pengguna (RBAC) belum aktif di server ini. Hubungi Admin.
+    </div>
+
+    <div class="grid-2" id="content" hidden>
+      <section class="card" aria-labelledby="profile-title">
+        <h2 id="profile-title">Profil</h2>
+        <dl class="profile">
+          <dt>Nama pengguna</dt><dd id="p-username"></dd>
+          <dt>Nama</dt><dd id="p-name"></dd>
+          <dt>Role</dt><dd id="p-role"></dd>
+          <dt>Login terakhir</dt><dd id="p-last"></dd>
+          <dt>Hak akses</dt><dd><div class="chips" id="p-perms"></div></dd>
+        </dl>
+      </section>
+
+      <section class="card" aria-labelledby="pw-title">
+        <h2 id="pw-title">Ganti kata sandi</h2>
+        <form id="pw-form" novalidate>
+          <div class="field">
+            <label for="pw-current">Kata sandi saat ini</label>
+            <input id="pw-current" type="password" autocomplete="current-password" required maxlength="128">
+          </div>
+          <div class="field">
+            <label for="pw-new">Kata sandi baru</label>
+            <input id="pw-new" type="password" autocomplete="new-password" required maxlength="128">
+          </div>
+          <div class="field">
+            <label for="pw-confirm">Ulangi kata sandi baru</label>
+            <input id="pw-confirm" type="password" autocomplete="new-password" required maxlength="128">
+          </div>
+          <ul class="hint">
+            <li>Minimal 12 karakter, berisi huruf dan angka.</li>
+            <li>Tidak boleh memuat nama pengguna, dan bukan kata sandi umum.</li>
+            <li>Setelah diganti, semua sesi login Anda di perangkat lain otomatis berakhir.</li>
+          </ul>
+          <button class="btn primary" type="submit" id="pw-submit">Simpan kata sandi baru</button>
+          <p class="msg" id="pw-msg" role="status" aria-live="polite"></p>
+        </form>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

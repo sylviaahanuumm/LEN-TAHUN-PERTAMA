@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="id" data-rbac-auto="off">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kelola User - Ocean Nexus 2026</title>
+  <link rel="icon" href="assets/logos/ocean-nexus.png">
+  <link rel="stylesheet" href="assets/css/onx-akun.css">
+  <script type="module" src="assets/js/kelola-user.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/index.html#menu"><img src="assets/logos/ocean-nexus.png" alt="">OCEAN NEXUS 2026</a>
+    <nav class="topnav" aria-label="Navigasi admin">
+      <span class="who" data-rbac-only hidden>Masuk sebagai <b data-rbac-name></b> · <span data-rbac-role></span></span>
+      <a class="btn" href="/index.html#menu">Menu</a>
+      <a class="btn" href="/akun.html">Akun Saya</a>
+      <button class="btn danger" type="button" id="logout">Keluar</button>
+    </nav>
+  </header>
+
+  <main>
+    <h1>Kelola User</h1>
+    <p class="lead">Atur siapa saja yang boleh masuk, role masing-masing, dan izin setiap role.</p>
+
+    <div class="tabs" role="tablist" aria-label="Bagian">
+      <button class="btn" type="button" role="tab" aria-selected="true" aria-controls="tab-users" id="t-users">User</button>
+      <button class="btn" type="button" role="tab" aria-selected="false" aria-controls="tab-roles" id="t-roles">Role &amp; Permission</button>
+      <button class="btn" type="button" role="tab" aria-selected="false" aria-controls="tab-audit" id="t-audit" data-perm="audit:view">Catatan Aktivitas</button>
+    </div>
+
+    <!-- ============ USER ============ -->
+    <section id="tab-users" role="tabpanel" aria-labelledby="t-users">
+      <div class="card">
+        <h2>Tambah user</h2>
+        <form class="inline-form" id="add-form" novalidate>
+          <div class="field">
+            <label for="add-username">Nama pengguna</label>
+            <input id="add-username" autocomplete="off" maxlength="32" placeholder="contoh: budi.santoso" required>
+          </div>
+          <div class="field">
+            <label for="add-name">Nama lengkap</label>
+            <input id="add-name" autocomplete="off" maxlength="80" placeholder="Budi Santoso">
+          </div>
+          <div class="field">
+            <label for="add-role">Role</label>
+            <select id="add-role"></select>
+          </div>
+          <button class="btn primary" type="submit">Tambah</button>
+        </form>
+        <p class="msg" id="add-msg" role="status" aria-live="polite"></p>
+        <div class="secret" id="secret" hidden>
+          <div><b>Kata sandi sementara</b> untuk <b id="secret-user"></b> (hanya ditampilkan sekali):</div>
+          <code id="secret-pw"></code><button class="btn small" type="button" id="secret-copy">Salin</button>
+          <div class="muted">Berikan ke pemilik akun lewat jalur pribadi. Ia wajib menggantinya saat login pertama.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Daftar user</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Nama pengguna</th><th>Nama</th><th>Role</th><th>Status</th><th>Login terakhir</th><th>Aksi</th></tr>
+            </thead>
+            <tbody id="user-rows"></tbody>
+          </table>
+        </div>
+        <p class="msg" id="users-msg" role="status" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <!-- ============ ROLE & PERMISSION ============ -->
+    <section id="tab-roles" role="tabpanel" aria-labelledby="t-roles" hidden>
+      <div class="card">
+        <h2>Izin setiap role</h2>
+        <p class="muted">Centang izin untuk tiap role, lalu klik Simpan pada baris itu. Role <b>admin</b> selalu memiliki semua izin.</p>
+        <div class="table-wrap">
+          <table class="matrix">
+            <thead id="matrix-head"></thead>
+            <tbody id="matrix-rows"></tbody>
+          </table>
+        </div>
+        <p class="msg" id="roles-msg" role="status" aria-live="polite"></p>
+      </div>
+      <div class="card">
+        <h2>Tambah role</h2>
+        <form class="inline-form" id="role-form" novalidate>
+          <div class="field">
+            <label for="role-name">Nama role</label>
+            <input id="role-name" autocomplete="off" maxlength="32" placeholder="contoh: analis">
+          </div>
+          <div class="field">
+            <label for="role-desc">Keterangan</label>
+            <input id="role-desc" autocomplete="off" maxlength="160" placeholder="Untuk tim analis data">
+          </div>
+          <button class="btn primary" type="submit">Tambah role</button>
+        </form>
+        <p class="muted">Role baru dibuat tanpa izin. Atur izinnya di tabel di atas.</p>
+        <p class="msg" id="role-msg" role="status" aria-live="polite"></p>
+      </div>
+      <div class="card">
+        <h2>Arti setiap izin</h2>
+        <div class="table-wrap"><table><tbody id="perm-rows"></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- ============ AUDIT ============ -->
+    <section id="tab-audit" role="tabpanel" aria-labelledby="t-audit" hidden>
+      <div class="card">
+        <h2>Catatan aktivitas</h2>
+        <form class="inline-form" id="audit-form">
+          <div class="field">
+            <label for="audit-user">Nama pengguna (opsional)</label>
+            <input id="audit-user" autocomplete="off" maxlength="64">
+          </div>
+          <div class="field">
+            <label for="audit-action">Jenis kejadian</label>
+            <select id="audit-action">
+              <option value="">Semua</option>
+              <option value="login_berhasil">Login berhasil</option>
+              <option value="login_gagal">Login gagal</option>
+              <option value="akun_terkunci">Akun terkunci</option>
+              <option value="logout">Logout</option>
+              <option value="ganti_sandi">Ganti kata sandi</option>
+              <option value="akses_ditolak">Akses ditolak</option>
+              <option value="user_dibuat">User dibuat</option>
+              <option value="user_diubah">User diubah</option>
+              <option value="sandi_direset">Kata sandi direset</option>
+              <option value="role_diubah">Role diubah</option>
+            </select>
+          </div>
+          <button class="btn primary" type="submit">Tampilkan</button>
+        </form>
+        <div class="table-wrap" style="margin-top:16px">
+          <table>
+            <thead><tr><th>Waktu</th><th>Pelaku</th><th>Kejadian</th><th>Sasaran</th><th>IP</th><th>Keterangan</th></tr></thead>
+            <tbody id="audit-rows"></tbody>
+          </table>
+        </div>
+        <p class="msg" id="audit-msg" role="status" aria-live="polite"></p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
